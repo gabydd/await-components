@@ -13,25 +13,20 @@ class PromiseState {
     this.id = id;
     this.executor = executor;
     this.promise = this.createPromise();
-    this.stored = this.promise;
+    this.stored ??= this.promise;
   }
-  createPromise() {
-    return new Promise(async (resolve, reject) => {
-      try {
-        this.data = await this.executor(this);
-        this.initialized = true;
-        this.state = 1 /* Fulfilled */;
-        resolve(this.data);
-      } catch (e) {
-        this.state = 2 /* Rejected */;
-        console.log(e);
-        reject();
-      } finally {
-        this.promise = this.createPromise();
-        this.stored = this.promise;
-        this.state = 0 /* Pending */;
-      }
-    });
+  async createPromise() {
+    try {
+      this.data = await this.executor(this);
+      this.initialized = true;
+      this.state = 1 /* Fulfilled */;
+      return this.data;
+    } catch (e) {
+      this.state = 2 /* Rejected */;
+      console.log(e);
+      throw e;
+    } finally {
+    }
   }
 }
 
@@ -69,7 +64,12 @@ class Context {
     this.initialVals[resource] = initial;
     const promise = this.createPromise((state) => {
       if (!state.initialized) {
-        return new Promise((resolve) => resolve(initial));
+        return new Promise((resolve) => {
+          resolve(initial);
+          state.initialized = true;
+          state.stored = state.createPromise();
+          state.state = 0 /* Pending */;
+        });
       }
       return new Promise((resolve) => {
         this.resolves[state.id] = resolve;
@@ -81,6 +81,9 @@ class Context {
   set(resource, value) {
     if (this.resolves[this.resources[resource]]) {
       const promise = this.promises[this.resources[resource]];
+      if (promise.state === 1 /* Fulfilled */) {
+        promise.stored = promise.createPromise();
+      }
       promise.promise = promise.stored;
       this.resolves[this.resources[resource]](value);
     } else {
@@ -124,11 +127,20 @@ class Context {
           if (promise.state === 0 /* Pending */) {
             promise.stored = promise.promise;
             promise.promise = new Promise((resolve) => resolve(promise.data));
+          } else {
+            promise.stored = promise.createPromise();
+            promise.state = 0 /* Pending */;
           }
         });
         await update(this);
         this.promises.forEach((promise) => {
-          promise.promise = promise.stored;
+          if (promise.state === 0 /* Pending */) {
+            promise.promise = promise.stored;
+          } else {
+            promise.promise = promise.createPromise();
+            promise.stored = promise.promise;
+            promise.state = 0 /* Pending */;
+          }
         });
       } catch (error) {
         console.error(error);
@@ -222,8 +234,10 @@ class DropdownChanger extends AsyncComponent {
   template() {
     return html`
       <div>
+        <p>Use this to change the url the await dropdown gets it's values from<p>
         <select id="select">
         </select>
+        <div id="div"></div>
         <div>
           <await-dropdown id="await-dropdown"></await-dropdown>
         </div>
@@ -235,11 +249,16 @@ class DropdownChanger extends AsyncComponent {
     const selected = await ctx.state("/selected", items[0]);
     const dropdown = this.root.getElementById("select");
     const awaitDropdown = this.root.getElementById("await-dropdown");
+    const div = this.root.getElementById("div");
+    let test = await ctx.state("/testing", 1);
+    ctx.set("/testing", 3);
+    ctx.set("/testing", 1);
     dropdown.innerHTML = items.map((item) => html`
       <option value=${item}>${item}</option>
     `).join();
     dropdown.value = selected;
     awaitDropdown.setAttribute("items-url", selected);
+    div.textContent = test.toString();
   }
   eventListeners(ctx) {
     const dropdown = this.root.getElementById("select");
@@ -248,5 +267,22 @@ class DropdownChanger extends AsyncComponent {
     });
   }
 }
+
+class TestElement extends AsyncComponent {
+  name = "test-element";
+  static observedAttributes = [];
+  template() {
+    return html`
+      <div id="div"></div>
+    `;
+  }
+  async update(ctx) {
+    const div = this.root.getElementById("div");
+    let test = await ctx.state("/testing", 1);
+    ctx.set("/testing", 3);
+    div.textContent = test.toString();
+  }
+}
 customElements.define("await-dropdown", Dropdown);
 customElements.define("changer-dropdown", DropdownChanger);
+customElements.define("test-element", TestElement);
