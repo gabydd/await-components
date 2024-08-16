@@ -43,6 +43,31 @@ class PromiseState<T> {
 }
 
 class Context {
+  addListener(element: HTMLElement, event: string, listener: (ctx: Context, e: Event) => Promise<void>) {
+    element.addEventListener(event, async (e) => {
+    this.promises.forEach((id) => {
+      const promise = globalContext.promises[id];
+      if (promise.state === State.Pending) {
+        promise.stored = promise.promise;
+        promise.promise = new Promise((resolve) => resolve(promise.data))
+      } else {
+        promise.stored = promise.createPromise();
+        promise.state = State.Pending;
+      }
+    });
+    await listener(this, e);
+    this.promises.forEach((id) => {
+      const promise = globalContext.promises[id];
+      if (promise.consumed) {
+        promise.promise = promise.createPromise();
+        promise.stored = promise.promise;
+        promise.state = State.Pending;
+      } else {
+        promise.promise = promise.stored;
+      }
+    });
+    })
+  }
   private promises: number[] = [];
   private properties: Record<string, number> = {};
   private states: Record<string, number> = {};
@@ -138,6 +163,9 @@ class Context {
     } else {
       this.prop(prop, value);
     }
+  }
+  getProp<T>(prop: string): T {
+    return globalContext.promises[this.properties[prop]].data;
   }
   createPromise<T>(promise: Executor<T>) {
     const id = globalContext.promises.length;
@@ -256,7 +284,7 @@ class Dropdown extends AsyncComponent {
   async update(ctx: Context) {
     const itemsUrl = await ctx.prop("items-url", "/items");
     const items = await ctx.fetch<string[]>(itemsUrl);
-    const selected = await ctx.state("/selected", items[0]);
+    const selected = await ctx.state(itemsUrl + "/selected", items[0]);
     const dropdown = this.root.getElementById("select") as HTMLSelectElement;
     const div = this.root.getElementById("div") as HTMLDivElement;
     dropdown.innerHTML = items.map(item => html`
@@ -268,9 +296,9 @@ class Dropdown extends AsyncComponent {
 
   eventListeners(ctx: Context) {
     const dropdown = this.root.getElementById("select") as HTMLSelectElement;
-    dropdown.addEventListener("change", () => {
-      ctx.set("/selected", dropdown.value);
-    })
+    ctx.addListener(dropdown, "change", async (ctx) => {
+      ctx.set(await ctx.prop("items-url", "/items") + "/selected", dropdown.value);
+    });
   }
 }
 
@@ -311,7 +339,7 @@ class DropdownChanger extends AsyncComponent {
 
   eventListeners(ctx: Context) {
     const dropdown = this.root.getElementById("select") as HTMLSelectElement;
-    dropdown.addEventListener("change", () => {
+    ctx.addListener(dropdown, "change", async (ctx) => {
       ctx.set("/selected", dropdown.value);
     })
   }
