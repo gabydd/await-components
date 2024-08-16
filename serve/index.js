@@ -29,6 +29,7 @@ class PromiseState {
       return this.data;
     } catch (e) {
       console.log(e);
+      this.state = 2 /* Rejected */;
       throw e;
     } finally {
     }
@@ -81,9 +82,13 @@ class Context {
     }
     const promise = this.createPromise((state) => {
       if (!state.initialized) {
-        return new Promise(async (resolve) => {
-          const res = await fetch(resource);
-          resolve(await res.json());
+        return new Promise(async (resolve, reject) => {
+          try {
+            const res = await fetch(resource);
+            resolve(await res.json());
+          } catch {
+            reject();
+          }
         });
       }
       return new Promise(() => {
@@ -206,6 +211,37 @@ class Context {
         });
       } catch (error) {
         console.error(error);
+        this.promises.forEach((id) => {
+          const promise = globalContext.promises[id];
+          if (promise.state === 2 /* Rejected */) {
+            let resolve;
+            let reject;
+            promise.promise = new Promise((_resolve, _reject) => {
+              resolve = _resolve;
+              reject = _reject;
+            });
+            setTimeout(async () => {
+              try {
+                promise.data = await promise.executor(promise);
+                promise.initialized = true;
+                promise.state = 0 /* Fulfilled */;
+                resolve(promise.data);
+              } catch (e) {
+                console.log(e);
+                promise.state = 2 /* Rejected */;
+                reject();
+              } finally {
+              }
+            }, 1000);
+            promise.stored = promise.promise;
+          } else if (promise.consumed) {
+            promise.promise = promise.createPromise();
+            promise.stored = promise.promise;
+            promise.state = 1 /* Pending */;
+          } else {
+            promise.promise = promise.stored;
+          }
+        });
       }
     }
   }

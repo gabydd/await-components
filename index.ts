@@ -1,6 +1,7 @@
 enum State {
   Fulfilled,
   Pending,
+  Rejected,
 }
 
 const globalContext = {
@@ -36,6 +37,7 @@ class PromiseState<T> {
       return this.data
     } catch (e) {
       console.log(e)
+      this.state = State.Rejected;
       throw e;
     } finally {
     }
@@ -45,27 +47,27 @@ class PromiseState<T> {
 class Context {
   addListener(element: HTMLElement, event: string, listener: (ctx: Context, e: Event) => Promise<void>) {
     element.addEventListener(event, async (e) => {
-    this.promises.forEach((id) => {
-      const promise = globalContext.promises[id];
-      if (promise.state === State.Pending) {
-        promise.stored = promise.promise;
-        promise.promise = new Promise((resolve) => resolve(promise.data))
-      } else {
-        promise.stored = promise.createPromise();
-        promise.state = State.Pending;
-      }
-    });
-    await listener(this, e);
-    this.promises.forEach((id) => {
-      const promise = globalContext.promises[id];
-      if (promise.consumed) {
-        promise.promise = promise.createPromise();
-        promise.stored = promise.promise;
-        promise.state = State.Pending;
-      } else {
-        promise.promise = promise.stored;
-      }
-    });
+      this.promises.forEach((id) => {
+        const promise = globalContext.promises[id];
+        if (promise.state === State.Pending) {
+          promise.stored = promise.promise;
+          promise.promise = new Promise((resolve) => resolve(promise.data))
+        } else {
+          promise.stored = promise.createPromise();
+          promise.state = State.Pending;
+        }
+      });
+      await listener(this, e);
+      this.promises.forEach((id) => {
+        const promise = globalContext.promises[id];
+        if (promise.consumed) {
+          promise.promise = promise.createPromise();
+          promise.stored = promise.promise;
+          promise.state = State.Pending;
+        } else {
+          promise.promise = promise.stored;
+        }
+      });
     })
   }
   private promises: number[] = [];
@@ -88,9 +90,13 @@ class Context {
     }
     const promise = this.createPromise<T>((state) => {
       if (!state.initialized) {
-        return new Promise(async (resolve) => {
-          const res = await fetch(resource);
-          resolve(await res.json());
+        return new Promise(async (resolve, reject) => {
+          try {
+            const res = await fetch(resource);
+            resolve(await res.json());
+          } catch {
+            reject();
+          }
         })
       }
       return new Promise(() => { });
@@ -213,6 +219,37 @@ class Context {
       }
       catch (error) {
         console.error(error)
+        this.promises.forEach((id) => {
+          const promise = globalContext.promises[id];
+          if (promise.state === State.Rejected) {
+            let resolve: (value: any) => void;
+            let reject: (reason?: any) => void;
+            promise.promise = new Promise((_resolve, _reject) => {
+              resolve = _resolve;
+              reject = _reject
+            })
+            setTimeout(async () => {
+                try {
+                 promise.data = await promise.executor(promise);
+                  promise.initialized = true;
+                  promise.state = State.Fulfilled;
+                  resolve(promise.data);
+                } catch (e) {
+                  console.log(e)
+                  promise.state = State.Rejected;
+                  reject();
+                } finally {
+                }
+            }, 1000);
+            promise.stored = promise.promise;
+          } else if (promise.consumed) {
+            promise.promise = promise.createPromise();
+            promise.stored = promise.promise;
+            promise.state = State.Pending;
+          } else {
+            promise.promise = promise.stored;
+          }
+        });
       }
     }
   }
