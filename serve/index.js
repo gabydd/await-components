@@ -1,4 +1,9 @@
 // index.ts
+var globalContext = {
+  resources: {},
+  resolves: {},
+  promises: []
+};
 var NOT_INITIALIZED = Symbol("Data not initialized");
 
 class PromiseState {
@@ -32,17 +37,25 @@ class PromiseState {
 
 class Context {
   promises = [];
-  resources = {};
   properties = {};
-  resolves = {};
+  states = {};
   initialVals = {};
   fetch(resource) {
-    if (this.resources[resource] !== undefined) {
-      return this.promises[this.resources[resource]].promise;
+    const id = globalContext.resources[resource];
+    if (id !== undefined) {
+      const promise2 = globalContext.promises[globalContext.resources[resource]];
+      if (!this.promises.includes(id)) {
+        if (promise2.state == 0 /* Pending */ && promise2.initialized) {
+          promise2.stored = promise2.promise;
+          promise2.promise = new Promise((resolve) => resolve(promise2.data));
+        }
+        this.promises.push(id);
+      }
+      return promise2.promise;
     }
     const promise = this.createPromise((state) => {
       if (!state.initialized) {
-        return new Promise(async (resolve, reject) => {
+        return new Promise(async (resolve) => {
           const res = await fetch(resource);
           resolve(await res.json());
         });
@@ -50,80 +63,90 @@ class Context {
       return new Promise(() => {
       });
     });
-    this.resources[resource] = promise.id;
+    globalContext.resources[resource] = promise.id;
     return promise.promise;
   }
   state(resource, initial) {
-    if (this.resources[resource] !== undefined) {
+    if (this.states[resource] !== undefined) {
       if (this.initialVals[resource] !== initial) {
         this.set(resource, initial);
         this.initialVals[resource] = initial;
       }
-      return this.promises[this.resources[resource]].promise;
+      return globalContext.promises[this.states[resource]].promise;
     }
     this.initialVals[resource] = initial;
     const promise = this.createPromise((state) => {
       if (!state.initialized) {
         return new Promise((resolve) => {
           resolve(initial);
-          state.initialized = true;
-          state.stored = state.createPromise();
-          state.state = 0 /* Pending */;
         });
       }
       return new Promise((resolve) => {
-        this.resolves[state.id] = resolve;
+        globalContext.resolves[state.id] = resolve;
       });
     });
-    this.resources[resource] = promise.id;
+    this.states[resource] = promise.id;
     return promise.promise;
   }
   set(resource, value) {
-    if (this.resolves[this.resources[resource]]) {
-      const promise = this.promises[this.resources[resource]];
+    if (this.states[resource]) {
+      const promise = globalContext.promises[this.states[resource]];
       if (promise.state === 1 /* Fulfilled */) {
         promise.stored = promise.createPromise();
+        promise.state = 0 /* Pending */;
       }
       promise.promise = promise.stored;
-      this.resolves[this.resources[resource]](value);
+      globalContext.resolves[this.states[resource]](value);
     } else {
       this.state(resource, value);
     }
   }
   prop(prop, defaultValue) {
     if (this.properties[prop] !== undefined) {
-      return this.promises[this.properties[prop]].promise;
+      return globalContext.promises[this.properties[prop]].promise;
     }
     const promise = this.createPromise((state) => {
       if (!state.initialized) {
         return new Promise((resolve) => resolve(defaultValue));
       }
       return new Promise((resolve) => {
-        this.resolves[state.id] = resolve;
+        globalContext.resolves[state.id] = resolve;
       });
     });
     this.properties[prop] = promise.id;
     return promise.promise;
   }
   setProp(prop, value) {
-    if (this.resolves[this.properties[prop]]) {
-      this.resolves[this.properties[prop]](value);
+    if (globalContext.resolves[this.properties[prop]]) {
+      globalContext.resolves[this.properties[prop]](value);
     } else {
       this.prop(prop, value);
     }
   }
   createPromise(promise) {
-    const id = this.promises.length;
+    const id = globalContext.promises.length;
     const state = new PromiseState(id, promise);
-    this.promises.push(state);
+    globalContext.promises.push(state);
+    this.promises.push(id);
     return state;
   }
   async loop(update) {
     await update(this);
+    this.promises.forEach((id) => {
+      const promise = globalContext.promises[id];
+      if (promise.state === 0 /* Pending */) {
+        promise.promise = promise.stored;
+      } else {
+        promise.promise = promise.createPromise();
+        promise.stored = promise.promise;
+        promise.state = 0 /* Pending */;
+      }
+    });
     while (true) {
       try {
-        await Promise.race(this.promises.map((promise) => promise.promise));
-        this.promises.forEach((promise) => {
+        await Promise.race(this.promises.map((id) => globalContext.promises[id].promise));
+        this.promises.forEach((id) => {
+          const promise = globalContext.promises[id];
           if (promise.state === 0 /* Pending */) {
             promise.stored = promise.promise;
             promise.promise = new Promise((resolve) => resolve(promise.data));
@@ -133,7 +156,8 @@ class Context {
           }
         });
         await update(this);
-        this.promises.forEach((promise) => {
+        this.promises.forEach((id) => {
+          const promise = globalContext.promises[id];
           if (promise.state === 0 /* Pending */) {
             promise.promise = promise.stored;
           } else {
