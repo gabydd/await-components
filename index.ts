@@ -1,7 +1,6 @@
 enum State {
-  Pending,
   Fulfilled,
-  Rejected,
+  Pending,
 }
 
 const globalContext = {
@@ -16,6 +15,7 @@ const NOT_INITIALIZED = Symbol("Data not initialized");
 class PromiseState<T> {
   data: T | typeof NOT_INITIALIZED = NOT_INITIALIZED;
   initialized = false;
+  consumed = false;
   state: State = State.Pending;
   promise: Promise<T>;
   stored: Promise<T>;
@@ -35,7 +35,6 @@ class PromiseState<T> {
       this.state = State.Fulfilled;
       return this.data
     } catch (e) {
-      this.state = State.Rejected;
       console.log(e)
       throw e;
     } finally {
@@ -57,6 +56,7 @@ class Context {
           promise.stored = promise.promise;
           promise.promise = new Promise(resolve => resolve(promise.data));
         }
+        promise.consumed = true;
         this.promises.push(id);
       }
       return promise.promise;
@@ -71,6 +71,7 @@ class Context {
       return new Promise(() => { });
     });
     globalContext.resources[resource] = promise.id;
+    promise.consumed = true;
     return promise.promise;
   }
   state<T>(resource: string, initial: T): Promise<T> {
@@ -79,7 +80,9 @@ class Context {
         this.set(resource, initial);
         this.initialVals[resource] = initial;
       }
-      return globalContext.promises[this.states[resource]].promise;
+      const promise = globalContext.promises[this.states[resource]];
+      promise.consumed = true;
+      return promise.promise;
     }
     this.initialVals[resource] = initial;
     const promise = this.createPromise<T>((state) => {
@@ -93,6 +96,7 @@ class Context {
       })
     })
     this.states[resource] = promise.id;
+    promise.consumed = true;
     return promise.promise;
   }
   set<T>(resource: string, value: T) {
@@ -102,6 +106,7 @@ class Context {
         promise.stored = promise.createPromise();
         promise.state = State.Pending;
       }
+      promise.consumed = false;
       promise.promise = promise.stored;
       globalContext.resolves[this.states[resource]](value);
     } else {
@@ -110,7 +115,9 @@ class Context {
   }
   prop<T>(prop: string, defaultValue: T): Promise<T> {
     if (this.properties[prop] !== undefined) {
-      return globalContext.promises[this.properties[prop]].promise;
+      const promise = globalContext.promises[this.properties[prop]];
+      promise.consumed = true;
+      return promise.promise;
     }
     const promise = this.createPromise<T>((state) => {
       if (!state.initialized) {
@@ -121,10 +128,12 @@ class Context {
       })
     })
     this.properties[prop] = promise.id;
+    promise.consumed = true;
     return promise.promise;
   }
   setProp<T>(prop: string, value: T) {
     if (globalContext.resolves[this.properties[prop]]) {
+      globalContext.promises[this.properties[prop]].consumed = false;
       globalContext.resolves[this.properties[prop]](value);
     } else {
       this.prop(prop, value);
@@ -141,12 +150,12 @@ class Context {
     await update(this);
     this.promises.forEach((id) => {
       const promise = globalContext.promises[id];
-      if (promise.state === State.Pending) {
-        promise.promise = promise.stored;
-      } else {
+      if (promise.consumed) {
         promise.promise = promise.createPromise();
         promise.stored = promise.promise;
         promise.state = State.Pending;
+      } else {
+        promise.promise = promise.stored;
       }
     });
     while (true) {
@@ -165,12 +174,12 @@ class Context {
         await update(this);
         this.promises.forEach((id) => {
           const promise = globalContext.promises[id];
-          if (promise.state === State.Pending) {
-            promise.promise = promise.stored;
-          } else {
+          if (promise.consumed) {
             promise.promise = promise.createPromise();
             promise.stored = promise.promise;
             promise.state = State.Pending;
+          } else {
+            promise.promise = promise.stored;
           }
         });
       }
@@ -289,9 +298,9 @@ class DropdownChanger extends AsyncComponent {
     const awaitDropdown = this.root.getElementById("await-dropdown")!;
     const div = this.root.getElementById("div") as HTMLDivElement;
     let test = await ctx.state("/testing", 1);
-    ctx.set("/testing", 3);
-
-    ctx.set("/testing", 1);
+    if (test !== 3) {
+      ctx.set("/testing", 3);
+    }
     dropdown.innerHTML = items.map(item => html`
       <option value=${item}>${item}</option>
     `).join();
@@ -320,7 +329,9 @@ class TestElement extends AsyncComponent {
   async update(ctx: Context) {
     const div = this.root.getElementById("div") as HTMLDivElement;
     let test = await ctx.state("/testing", 1);
-    ctx.set("/testing", 3);
+    if (test !== 3) {
+      ctx.set("/testing", 3);
+    }
 
     div.textContent = test.toString();
   }
