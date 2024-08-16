@@ -1,9 +1,15 @@
 const server = Bun.serve({
-  fetch(request) {
+  async fetch(request) {
     let path = new URL(request.url).pathname;
-    if (path === "/items") return Response.json(["test", "test2"]);
+    if (path === "/items") {
+      await Bun.sleep(1000);
+      return Response.json(["test", "test2"]);
+    }
     if (path === "/items2") return Response.json(["test3", "test4"]);
-    if (path === "/items3") return Response.json(["test", "test2", "test3", "test4"]);
+    if (path === "/items3") {
+      await Bun.sleep(5000);
+      return Response.json(["test", "test2", "test3", "test4"]);
+    }
     if (path === "/itemUrls") return Response.json(["/items", "/items2", "/items3"]);
     const sep = path.lastIndexOf(".");
     const slash = path.lastIndexOf("/");

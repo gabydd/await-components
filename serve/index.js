@@ -280,7 +280,6 @@ class AsyncComponent extends HTMLElement {
   adoptedCallback() {
   }
   attributeChangedCallback(name, oldValue, newValue) {
-    console.log("changed", name, newValue);
     this.context.setProp(name, newValue);
   }
   template() {
@@ -307,11 +306,13 @@ class Dropdown extends AsyncComponent {
     `;
   }
   async update(ctx) {
+    const dropdown = this.root.getElementById("select");
+    const div = this.root.getElementById("div");
+    dropdown.innerHTML = html`<option>Loading...</option>`;
+    div.textContent = "Loading...";
     const itemsUrl = await ctx.prop("items-url", "/items");
     const items = await ctx.fetch(itemsUrl);
     const selected = await ctx.state(itemsUrl + "/selected", items[0]);
-    const dropdown = this.root.getElementById("select");
-    const div = this.root.getElementById("div");
     dropdown.innerHTML = items.map((item) => html`
       <option value=${item}>${item}</option>
     `).join();

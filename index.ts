@@ -291,7 +291,6 @@ class AsyncComponent extends HTMLElement {
 
   }
   attributeChangedCallback(name: string, oldValue: any, newValue: any) {
-    console.log("changed", name, newValue);
     this.context.setProp(name, newValue);
   }
   template(): string {
@@ -319,11 +318,13 @@ class Dropdown extends AsyncComponent {
   }
 
   async update(ctx: Context) {
+    const dropdown = this.root.getElementById("select") as HTMLSelectElement;
+    const div = this.root.getElementById("div") as HTMLDivElement;
+    dropdown.innerHTML = html`<option>Loading...</option>`;
+    div.textContent = "Loading..."
     const itemsUrl = await ctx.prop("items-url", "/items");
     const items = await ctx.fetch<string[]>(itemsUrl);
     const selected = await ctx.state(itemsUrl + "/selected", items[0]);
-    const dropdown = this.root.getElementById("select") as HTMLSelectElement;
-    const div = this.root.getElementById("div") as HTMLDivElement;
     dropdown.innerHTML = items.map(item => html`
       <option value=${item}>${item}</option>
     `).join();
