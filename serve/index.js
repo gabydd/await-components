@@ -2,7 +2,8 @@
 var globalContext = {
   resources: {},
   resolves: {},
-  promises: []
+  promises: [],
+  websockets: {}
 };
 var NOT_INITIALIZED = Symbol("Data not initialized");
 
@@ -35,8 +36,11 @@ class PromiseState {
     }
   }
 }
-
 class Context {
+  promises = [];
+  properties = {};
+  states = {};
+  initialVals = {};
   addListener(element, event, listener) {
     element.addEventListener(event, async (e) => {
       this.promises.forEach((id) => {
@@ -62,22 +66,18 @@ class Context {
       });
     });
   }
-  promises = [];
-  properties = {};
-  states = {};
-  initialVals = {};
   fetch(resource) {
     const id = globalContext.resources[resource];
     if (id !== undefined) {
       const promise2 = globalContext.promises[globalContext.resources[resource]];
       if (!this.promises.includes(id)) {
-        if (promise2.state == 1 /* Pending */ && promise2.initialized) {
+        if (promise2.state === 1 /* Pending */ && promise2.initialized) {
           promise2.stored = promise2.promise;
           promise2.promise = new Promise((resolve) => resolve(promise2.data));
         }
-        promise2.consumed = true;
         this.promises.push(id);
       }
+      promise2.consumed = true;
       return promise2.promise;
     }
     const promise = this.createPromise((state) => {
@@ -97,6 +97,8 @@ class Context {
     globalContext.resources[resource] = promise.id;
     promise.consumed = true;
     return promise.promise;
+  }
+  ws(url) {
   }
   state(resource, initial) {
     if (this.states[resource] !== undefined) {
@@ -174,7 +176,7 @@ class Context {
     return state;
   }
   async loop(update) {
-    await update(this);
+    await update(this, this.h.bind(this));
     this.promises.forEach((id) => {
       const promise = globalContext.promises[id];
       if (promise.consumed) {
@@ -198,7 +200,7 @@ class Context {
             promise.state = 1 /* Pending */;
           }
         });
-        await update(this);
+        await update(this, this.h.bind(this));
         this.promises.forEach((id) => {
           const promise = globalContext.promises[id];
           if (promise.consumed) {
@@ -245,6 +247,14 @@ class Context {
       }
     }
   }
+  h = (tag, attrs, ...children) => {
+    const element = document.createElement(tag);
+    for (const attr in attrs) {
+      element.setAttribute(attr, attrs[attr]);
+    }
+    element.replaceChildren(...children);
+    return element;
+  };
 }
 
 class AsyncComponent extends HTMLElement {
@@ -258,9 +268,8 @@ class AsyncComponent extends HTMLElement {
   connectedCallback() {
     let template = document.getElementById(this.name + "-template");
     if (!template) {
-      const temp = document.createElement("template");
-      temp.innerHTML = this.template();
-      temp.id = this.name + "-template";
+      const temp = this.context.h("template", { id: this.name + "-template" });
+      temp.content.appendChild(this.template(this.context, this.context.h.bind(this.context)));
       template = document.body.appendChild(temp);
     }
     const shadowRoot = this.attachShadow({ mode: "open" });
@@ -272,7 +281,7 @@ class AsyncComponent extends HTMLElement {
         this.context.setProp(attr, value);
       }
     });
-    this.eventListeners(this.context);
+    this.eventListeners(this.context, this.context.h.bind(this.context));
     this.context.loop(this.update.bind(this));
   }
   disconnectedCallback() {
@@ -282,40 +291,31 @@ class AsyncComponent extends HTMLElement {
   attributeChangedCallback(name, oldValue, newValue) {
     this.context.setProp(name, newValue);
   }
-  template() {
+  template(ctx, h) {
     throw new Error("Must implement template");
   }
-  async update(ctx) {
+  async update(ctx, h) {
     throw new Error("Must implement update");
   }
-  eventListeners(ctx) {
+  eventListeners(ctx, h) {
   }
 }
-var html = (strings, ...values) => String.raw({ raw: strings }, ...values);
 
 class Dropdown extends AsyncComponent {
   name = "await-dropdown";
   static observedAttributes = ["items-url"];
-  template() {
-    return html`
-      <div>
-        <select id="select">
-        </select>
-        <div id="div"></div>
-      </div>
-    `;
+  template(ctx, h) {
+    return h("div", {}, h("select", { id: "select" }), h("div", { id: "div" }));
   }
-  async update(ctx) {
+  async update(ctx, h) {
     const dropdown = this.root.getElementById("select");
     const div = this.root.getElementById("div");
-    dropdown.innerHTML = html`<option>Loading...</option>`;
+    dropdown.replaceChildren(h("option", {}, "Loading..."));
     div.textContent = "Loading...";
     const itemsUrl = await ctx.prop("items-url", "/items");
     const items = await ctx.fetch(itemsUrl);
     const selected = await ctx.state(itemsUrl + "/selected", items[0]);
-    dropdown.innerHTML = items.map((item) => html`
-      <option value=${item}>${item}</option>
-    `).join();
+    dropdown.replaceChildren(...items.map((item) => h("option", { value: item }, item)));
     dropdown.value = selected;
     div.textContent = selected;
   }
@@ -330,20 +330,10 @@ class Dropdown extends AsyncComponent {
 class DropdownChanger extends AsyncComponent {
   name = "changer-dropdown";
   static observedAttributes = [];
-  template() {
-    return html`
-      <div>
-        <p>Use this to change the url the await dropdown gets it's values from<p>
-        <select id="select">
-        </select>
-        <div id="div"></div>
-        <div>
-          <await-dropdown id="await-dropdown"></await-dropdown>
-        </div>
-      </div>
-    `;
+  template(ctx, h) {
+    return h("div", {}, h("p", {}, "Use this to chagne the url the await dropdown gets it's values from"), h("select", { id: "select" }), h("div", { id: "div" }), h("div", {}, h("await-dropdown", { id: "await-dropdown" })));
   }
-  async update(ctx) {
+  async update(ctx, h) {
     const items = await ctx.fetch("/itemUrls");
     const selected = await ctx.state("/selected", items[0]);
     const dropdown = this.root.getElementById("select");
@@ -353,9 +343,7 @@ class DropdownChanger extends AsyncComponent {
     if (test !== 3) {
       ctx.set("/testing", 3);
     }
-    dropdown.innerHTML = items.map((item) => html`
-      <option value=${item}>${item}</option>
-    `).join();
+    dropdown.replaceChildren(...items.map((item) => h("option", { value: item }, item)));
     dropdown.value = selected;
     awaitDropdown.setAttribute("items-url", selected);
     div.textContent = test.toString();
@@ -371,10 +359,8 @@ class DropdownChanger extends AsyncComponent {
 class TestElement extends AsyncComponent {
   name = "test-element";
   static observedAttributes = [];
-  template() {
-    return html`
-      <div id="div"></div>
-    `;
+  template(ctx, h) {
+    return h("div", { id: "div" });
   }
   async update(ctx) {
     const div = this.root.getElementById("div");
@@ -388,3 +374,7 @@ class TestElement extends AsyncComponent {
 customElements.define("await-dropdown", Dropdown);
 customElements.define("changer-dropdown", DropdownChanger);
 customElements.define("test-element", TestElement);
+export {
+  Context,
+  AsyncComponent
+};
