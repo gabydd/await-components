@@ -13,7 +13,7 @@ export enum MessageType {
 
 export type Subscriptions = {
   "/todos": number[];
-  [K: `/todo/${number}`]: Todo;
+  [K: `/todo/${string}`]: Todo;
 }
 
 export type ClientMessage = { type: MessageType.CreateTodo, text: string } | { type: MessageType.RemoveTodo, id: number } | { type: MessageType.UpdateTodo, todo: Todo } | { type: MessageType.Subscribe, path: keyof Subscriptions };

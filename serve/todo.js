@@ -467,7 +467,7 @@ class TodoItem extends AsyncComponent {
     const done = this.root.getElementById("done");
     const text = this.root.getElementById("text");
     const ws = await ctx.ws("/wss");
-    const todoId = Number.parseInt(await ctx.prop("todo-id", "0"));
+    const todoId = await ctx.prop("todo-id", "0");
     const todo = await ws.subscribe(`/todo/${todoId}`);
     done.checked = todo.done;
     text.textContent = todo.text;
@@ -477,7 +477,7 @@ class TodoItem extends AsyncComponent {
     const deleteTodo = this.root.getElementById("delete");
     ctx.addListener(done, "change", async (ctx2) => {
       const ws = await ctx2.ws("/wss");
-      const todoId = Number.parseInt(await ctx2.prop("todo-id", "0"));
+      const todoId = await ctx2.prop("todo-id", "0");
       const todo = await ws.subscribe(`/todo/${todoId}`);
       todo.done = done.checked;
       ws.send({ type: 2 /* UpdateTodo */, todo });

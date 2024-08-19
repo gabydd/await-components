@@ -37,7 +37,7 @@ class TodoItem extends AsyncComponent {
     const done = this.root.getElementById("done") as HTMLInputElement;
     const text = this.root.getElementById("text") as HTMLSpanElement;
     const ws = await ctx.ws("/wss");
-    const todoId = Number.parseInt(await ctx.prop("todo-id", "0"));
+    const todoId = await ctx.prop("todo-id", "0");
     const todo = await ws.subscribe(`/todo/${todoId}`);
     done.checked = todo.done;
     text.textContent = todo.text;
@@ -47,7 +47,7 @@ class TodoItem extends AsyncComponent {
     const deleteTodo = this.root.getElementById("delete") as HTMLButtonElement;
     ctx.addListener(done, "change", async (ctx) => {
       const ws = await ctx.ws("/wss");
-      const todoId = Number.parseInt(await ctx.prop("todo-id", "0"));
+      const todoId = await ctx.prop("todo-id", "0");
       const todo = await ws.subscribe(`/todo/${todoId}`);
       todo.done = done.checked;
       ws.send({ type: MessageType.UpdateTodo, todo } satisfies ClientMessage)
