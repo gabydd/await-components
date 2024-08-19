@@ -74,7 +74,6 @@ class AsyncWebSocket {
           state.stored = state.createPromise();
         }
         state.promise = state.stored;
-        state.consumed = false;
         globalContext.resolves[state.id](data.data);
       }
     });
@@ -105,12 +104,12 @@ class WebSocketContext {
       state.consumed = true;
       return state.promise;
     }
-    await this.ws.openPromise;
-    const promise = this.context.createPromiseState((state) => {
+    const promise = this.context.createPromiseState(async (state) => {
       return state.createResolver();
     });
     this.ws.promises[path] = promise.id;
     promise.consumed = true;
+    await this.ws.openPromise;
     this.ws.send(JSON.stringify({ type: 3 /* Subscribe */, path }));
     return promise.promise;
   }
@@ -254,6 +253,7 @@ class Context {
       if (state.consumed) {
         state.promise = state.createPromise();
         state.stored = state.promise;
+        state.consumed = false;
       } else {
         state.promise = state.stored;
       }
@@ -441,11 +441,23 @@ class Layout extends AsyncComponent {
   template(ctx, h) {
     return h("div", {}, h("div", {}, h("input", { type: "text", id: "text" }), h("button", { id: "create" }, "Create Todo")), h("div", { id: "list" }));
   }
+  todoChildren = new Map;
   async update(ctx, h) {
     const list = this.root.getElementById("list");
     const ws = await ctx.ws("/wss");
     const todos = await ws.subscribe("/todos");
-    list.replaceChildren(...todos.map((todoId) => h("todo-item", { "todo-id": todoId })));
+    const toAdd = new Set(todos);
+    for (const todo of this.todoChildren.keys()) {
+      if (!toAdd.has(todo)) {
+        this.todoChildren.get(todo).remove();
+        this.todoChildren.delete(todo);
+      } else {
+        toAdd.delete(todo);
+      }
+    }
+    for (const todo of toAdd.keys()) {
+      this.todoChildren.set(todo, list.appendChild(h("todo-item", { "todo-id": todo })));
+    }
   }
   eventListeners(ctx, h) {
     const text = this.root.getElementById("text");

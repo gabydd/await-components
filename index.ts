@@ -89,7 +89,6 @@ class AsyncWebSocket {
           state.stored = state.createPromise();
         }
         state.promise = state.stored;
-        state.consumed = false;
         globalContext.resolves[state.id](data.data);
       }
     })
@@ -122,12 +121,12 @@ class WebSocketContext {
       state.consumed = true;
       return state.promise;
     }
-    await this.ws.openPromise;
-    const promise = this.context.createPromiseState<Subscriptions[K]>((state) => {
+    const promise = this.context.createPromiseState<Subscriptions[K]>(async (state) => {
       return state.createResolver();
     })
     this.ws.promises[path] = promise.id;
     promise.consumed = true;
+    await this.ws.openPromise;
     this.ws.send(JSON.stringify({ type: MessageType.Subscribe, path } satisfies ClientMessage));
     return promise.promise;
   }
@@ -269,6 +268,7 @@ export class Context {
       if (state.consumed) {
         state.promise = state.createPromise();
         state.stored = state.promise;
+        state.consumed = false;
       } else {
         state.promise = state.stored;
       }

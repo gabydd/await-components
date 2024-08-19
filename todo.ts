@@ -8,11 +8,23 @@ class Layout extends AsyncComponent {
       h("div", {}, h("input", { type: "text", id: "text" }), h("button", { id: "create" }, "Create Todo")),
       h("div", { id: "list" }))
   }
+  todoChildren = new Map<number, TodoItem>();
   async update(ctx: Context, h: CreateElement) {
     const list = this.root.getElementById("list") as HTMLDivElement;
     const ws = await ctx.ws("/wss");
     const todos = await ws.subscribe("/todos");
-    list.replaceChildren(...todos.map(todoId => h("todo-item", { "todo-id": todoId })))
+    const toAdd = new Set<number>(todos);
+    for (const todo of this.todoChildren.keys()) {
+      if (!toAdd.has(todo)) {
+        this.todoChildren.get(todo)!.remove();
+        this.todoChildren.delete(todo);
+      } else {
+        toAdd.delete(todo);
+      }
+    }
+    for (const todo of toAdd.keys()) {
+      this.todoChildren.set(todo, list.appendChild(h("todo-item", { "todo-id": todo })));
+    }
   }
   eventListeners(ctx: Context, h: CreateElement) {
     const text = this.root.getElementById("text") as HTMLInputElement;
