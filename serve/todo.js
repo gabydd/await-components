@@ -119,25 +119,14 @@ class Context {
     element.addEventListener(event, async (e) => {
       this.promises.forEach((id) => {
         const promise = globalContext.promises[id];
-        if (promise.state === 1 /* Pending */) {
-          promise.stored = promise.promise;
-          promise.promise = new Promise((resolve) => resolve(promise.data));
-        } else {
-          promise.stored = promise.createPromise();
-          promise.state = 1 /* Pending */;
-        }
+        promise.stored = promise.promise;
+        promise.promise = new Promise((resolve) => resolve(promise.data));
       });
       await listener(this, e);
       this.promises.forEach((id) => {
         const promise = globalContext.promises[id];
-        if (promise.consumed) {
-          promise.promise = promise.createPromise();
-          promise.stored = promise.promise;
-          promise.state = 1 /* Pending */;
-          promise.consumed = false;
-        } else {
-          promise.promise = promise.stored;
-        }
+        promise.promise = promise.stored;
+        promise.consumed = false;
       });
     });
   }
