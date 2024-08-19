@@ -1,4 +1,6 @@
-enum State {
+import { MessageType, type ClientMessage, type Subscriptions } from "./shared";
+
+enum PromiseStatus {
   Fulfilled,
   Pending,
   Rejected,
@@ -19,7 +21,7 @@ class PromiseState<T> {
   data: T | typeof NOT_INITIALIZED = NOT_INITIALIZED;
   initialized = false;
   consumed = false;
-  state: State = State.Pending;
+  status: PromiseStatus = PromiseStatus.Pending;
   promise: Promise<T>;
   stored: Promise<T>;
   executor: Executor<T>
@@ -32,17 +34,32 @@ class PromiseState<T> {
   }
 
   async createPromise() {
+    this.status = PromiseStatus.Pending;
     try {
       this.data = await this.executor(this);
       this.initialized = true;
-      this.state = State.Fulfilled;
+      this.status = PromiseStatus.Fulfilled;
       return this.data
     } catch (e) {
       console.log(e)
-      this.state = State.Rejected;
+      this.status = PromiseStatus.Rejected;
       throw e;
     } finally {
     }
+  }
+
+  createResolver() {
+    return new Promise<T>((resolve) => {
+      globalContext.resolves[this.id] = resolve;
+    })
+  }
+
+  resolve(value: T) {
+    globalContext.resolves[this.id](value);
+  }
+
+  cached() {
+    return Promise.resolve(this.data);
   }
 }
 
@@ -67,14 +84,13 @@ class AsyncWebSocket {
       console.log(data);
       const id = this.promises[data.path];
       if (id !== undefined) {
-        const promise = globalContext.promises[id];
-        if (promise.state === State.Fulfilled) {
-          promise.stored = promise.createPromise();
-          promise.state = State.Pending;
+        const state = globalContext.promises[id];
+        if (state.status === PromiseStatus.Fulfilled) {
+          state.stored = state.createPromise();
         }
-        promise.promise = promise.stored;
-        promise.consumed = false;
-        globalContext.resolves[promise.id](data.data);
+        state.promise = state.stored;
+        state.consumed = false;
+        globalContext.resolves[state.id](data.data);
       }
     })
   }
@@ -92,29 +108,27 @@ class WebSocketContext {
     this.ws = ws;
     this.context = context;
   }
-  async subscribe<T>(path: string, payload: any): Promise<T> {
+  async subscribe<K extends keyof Subscriptions>(path: K): Promise<Subscriptions[K]> {
     const id = this.ws.promises[path];
     if (id !== undefined) {
-      const promise = globalContext.promises[id];
+      const state = globalContext.promises[id];
       if (!this.context.promises.includes(id)) {
-        if (promise.state === State.Pending && promise.initialized) {
-          promise.stored = promise.promise;
-          promise.promise = new Promise(resolve => resolve(promise.data));
+        if (state.status === PromiseStatus.Pending && state.initialized) {
+          state.stored = state.promise;
+          state.promise = state.cached();
         }
         this.context.promises.push(id);
       }
-      promise.consumed = true;
-      return promise.promise;
+      state.consumed = true;
+      return state.promise;
     }
     await this.ws.openPromise;
-    const promise = this.context.createPromise<T>((state) => {
-      return new Promise((resolve) => {
-        globalContext.resolves[state.id] = resolve;
-      })
+    const promise = this.context.createPromiseState<Subscriptions[K]>((state) => {
+      return state.createResolver();
     })
     this.ws.promises[path] = promise.id;
     promise.consumed = true;
-    this.ws.send(JSON.stringify(payload));
+    this.ws.send(JSON.stringify({ type: MessageType.Subscribe, path } satisfies ClientMessage));
     return promise.promise;
   }
   send(payload: any) {
@@ -131,33 +145,33 @@ export class Context {
   addListener(element: HTMLElement, event: string, listener: (ctx: Context, e: Event) => Promise<void>) {
     element.addEventListener(event, async (e) => {
       this.promises.forEach((id) => {
-        const promise = globalContext.promises[id];
-        promise.stored = promise.promise;
-        promise.promise = new Promise((resolve) => resolve(promise.data))
+        const state = globalContext.promises[id];
+        state.stored = state.promise;
+        state.promise = state.cached();
       });
       await listener(this, e);
       this.promises.forEach((id) => {
-        const promise = globalContext.promises[id];
-        promise.promise = promise.stored;
-        promise.consumed = false;
+        const state = globalContext.promises[id];
+        state.promise = state.stored;
+        state.consumed = false;
       });
     })
   }
   fetch<T>(resource: string): Promise<T> {
     const id = globalContext.resources[resource];
     if (id !== undefined) {
-      const promise = globalContext.promises[globalContext.resources[resource]];
+      const state = globalContext.promises[id];
       if (!this.promises.includes(id)) {
-        if (promise.state === State.Pending && promise.initialized) {
-          promise.stored = promise.promise;
-          promise.promise = new Promise(resolve => resolve(promise.data));
+        if (state.status === PromiseStatus.Pending && state.initialized) {
+          state.stored = state.promise;
+          state.promise = state.cached();
         }
         this.promises.push(id);
       }
-      promise.consumed = true;
-      return promise.promise;
+      state.consumed = true;
+      return state.promise;
     }
-    const promise = this.createPromise<T>((state) => {
+    const promise = this.createPromiseState<T>((state) => {
       if (!state.initialized) {
         return new Promise(async (resolve, reject) => {
           try {
@@ -174,16 +188,15 @@ export class Context {
     promise.consumed = true;
     return promise.promise;
   }
-  async ws(url: string): Promise<WebSocketContext> {
-    const ws = globalContext.websockets[url];
-    if (ws !== undefined) {
-      await ws.openPromise;
-      return new WebSocketContext(ws, this);
-    }
-    const sock = new AsyncWebSocket(new WebSocket(url));
+  createSocket(url: string) {
+    const sock = new AsyncWebSocket(new WebSocket(url))
     globalContext.websockets[url] = sock;
-    await sock.openPromise;
-    return new WebSocketContext(sock, this);
+    return sock;
+  }
+  async ws(url: string): Promise<WebSocketContext> {
+    const ws = globalContext.websockets[url] ?? this.createSocket(url);
+    await ws.openPromise;
+    return new WebSocketContext(ws, this);
   }
   state<T>(resource: string, initial: T): Promise<T> {
     if (this.states[resource] !== undefined) {
@@ -191,118 +204,102 @@ export class Context {
         this.set(resource, initial);
         this.initialVals[resource] = initial;
       }
-      const promise = globalContext.promises[this.states[resource]];
-      promise.consumed = true;
-      return promise.promise;
+      const state = globalContext.promises[this.states[resource]];
+      state.consumed = true;
+      return state.promise;
     }
     this.initialVals[resource] = initial;
-    const promise = this.createPromise<T>((state) => {
-      if (!state.initialized) {
-        return new Promise((resolve) => {
-          resolve(initial);
-        });
-      }
-      return new Promise((resolve) => {
-        globalContext.resolves[state.id] = resolve;
-      })
+    const state = this.createPromiseState<T>((state) => {
+      return state.createResolver();
     })
-    this.states[resource] = promise.id;
-    promise.consumed = true;
-    return promise.promise;
+    state.resolve(initial);
+    this.states[resource] = state.id;
+    state.consumed = true;
+    return state.promise;
   }
   set<T>(resource: string, value: T) {
     if (this.states[resource]) {
-      const promise = globalContext.promises[this.states[resource]];
-      if (promise.state === State.Fulfilled) {
-        promise.stored = promise.createPromise();
-        promise.state = State.Pending;
+      const state = globalContext.promises[this.states[resource]];
+      if (state.data === value) return;
+      if (state.status === PromiseStatus.Fulfilled) {
+        state.stored = state.createPromise();
       }
-      promise.consumed = false;
-      promise.promise = promise.stored;
-      globalContext.resolves[this.states[resource]](value);
+      state.consumed = false;
+      state.promise = state.stored;
+      state.resolve(value);
     } else {
       this.state(resource, value);
     }
   }
   prop(prop: string, defaultValue: string): Promise<string> {
     if (this.properties[prop] !== undefined) {
-      const promise = globalContext.promises[this.properties[prop]];
-      promise.consumed = true;
-      return promise.promise;
+      const state = globalContext.promises[this.properties[prop]];
+      state.consumed = true;
+      return state.promise;
     }
-    const promise = this.createPromise<string>((state) => {
-      if (!state.initialized) {
-        return new Promise((resolve) => resolve(defaultValue));
-      }
-      return new Promise((resolve) => {
-        globalContext.resolves[state.id] = resolve;
-      })
+    const state = this.createPromiseState<string>((state) => {
+      const promise = state.createResolver();
+      return promise;
     })
-    this.properties[prop] = promise.id;
-    promise.consumed = true;
-    return promise.promise;
+    state.resolve(defaultValue);
+    this.properties[prop] = state.id;
+    state.consumed = true;
+    return state.promise;
   }
   setProp(prop: string, value: string) {
-    if (globalContext.resolves[this.properties[prop]]) {
-      globalContext.promises[this.properties[prop]].consumed = false;
-      globalContext.resolves[this.properties[prop]](value);
+    const state = globalContext.promises[this.properties[prop]];
+    if (state !== undefined) {
+      if (state.data === value) return;
+      state.consumed = false;
+      state.resolve(value);
     } else {
       this.prop(prop, value);
     }
   }
-  getProp<T>(prop: string): T {
-    return globalContext.promises[this.properties[prop]].data;
-  }
-  createPromise<T>(promise: Executor<T>) {
+  createPromiseState<T>(promise: Executor<T>) {
     const id = globalContext.promises.length;
     const state = new PromiseState(id, promise);
     globalContext.promises.push(state);
     this.promises.push(id);
     return state;
   }
-  async loop(update: (ctx: Context, h: CreateElement) => Promise<void>) {
-    await update(this, this.h.bind(this));
+  restore() {
     this.promises.forEach((id) => {
-      const promise = globalContext.promises[id];
-      if (promise.consumed) {
-        promise.promise = promise.createPromise();
-        promise.stored = promise.promise;
-        promise.state = State.Pending;
+      const state = globalContext.promises[id];
+      if (state.consumed) {
+        state.promise = state.createPromise();
+        state.stored = state.promise;
       } else {
-        promise.promise = promise.stored;
+        state.promise = state.stored;
       }
     });
+  }
+  save() {
+    this.promises.forEach((id) => {
+      const state = globalContext.promises[id];
+      if (state.status === PromiseStatus.Pending) {
+        state.stored = state.promise;
+        state.promise = state.cached();
+      } else {
+        state.stored = state.createPromise();
+      }
+    });
+  }
+  async loop(update: (ctx: Context, h: CreateElement) => Promise<void>) {
+    await update(this, this.h.bind(this));
+    this.restore();
     while (true) {
       try {
         await Promise.race(this.promises.map(id => globalContext.promises[id].promise));
-        this.promises.forEach((id) => {
-          const promise = globalContext.promises[id];
-          if (promise.state === State.Pending) {
-            promise.stored = promise.promise;
-            promise.promise = new Promise((resolve) => resolve(promise.data))
-          } else {
-            promise.stored = promise.createPromise();
-            promise.state = State.Pending;
-          }
-        });
+        this.save();
         await update(this, this.h.bind(this));
-        this.promises.forEach((id) => {
-          const promise = globalContext.promises[id];
-          if (promise.consumed) {
-            promise.promise = promise.createPromise();
-            promise.stored = promise.promise;
-            promise.state = State.Pending;
-            promise.consumed = false;
-          } else {
-            promise.promise = promise.stored;
-          }
-        });
+        this.restore();
       }
       catch (error) {
         console.error(error)
         this.promises.forEach((id) => {
           const promise = globalContext.promises[id];
-          if (promise.state === State.Rejected) {
+          if (promise.status === PromiseStatus.Rejected) {
             let resolve: (value: any) => void;
             let reject: (reason?: any) => void;
             promise.promise = new Promise((_resolve, _reject) => {
@@ -313,22 +310,18 @@ export class Context {
               try {
                 promise.data = await promise.executor(promise);
                 promise.initialized = true;
-                promise.state = State.Fulfilled;
+                promise.status = PromiseStatus.Fulfilled;
                 resolve(promise.data);
               } catch (e) {
                 console.log(e)
-                promise.state = State.Rejected;
+                promise.status = PromiseStatus.Rejected;
                 reject();
               } finally {
               }
             }, 1000);
             promise.stored = promise.promise;
-          } else if (promise.consumed) {
-            promise.promise = promise.createPromise();
-            promise.stored = promise.promise;
-            promise.state = State.Pending;
           } else {
-            promise.promise = promise.stored;
+            this.restore();
           }
         });
       }
@@ -441,9 +434,7 @@ class DropdownChanger extends AsyncComponent {
     const awaitDropdown = this.root.getElementById("await-dropdown")!;
     const div = this.root.getElementById("div") as HTMLDivElement;
     let test = await ctx.state("/testing", 1);
-    if (test !== 3) {
-      ctx.set("/testing", 3);
-    }
+    ctx.set("/testing", 3);
     dropdown.replaceChildren(...items.map(item => h("option", { value: item }, item)));
     dropdown.value = selected;
     awaitDropdown.setAttribute("items-url", selected);
@@ -468,9 +459,7 @@ class TestElement extends AsyncComponent {
   async update(ctx: Context) {
     const div = this.root.getElementById("div") as HTMLDivElement;
     let test = await ctx.state("/testing", 1);
-    if (test !== 3) {
-      ctx.set("/testing", 3);
-    }
+    ctx.set("/testing", 3);
 
     div.textContent = test.toString();
   }

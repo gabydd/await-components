@@ -1,5 +1,5 @@
 import type { ServerWebSocket } from "bun";
-import { MessageType, ServerMessageType, type ClientMessage, type Todo } from "./shared"
+import { MessageType, type ClientMessage, type ServerMessage, type Todo } from "./shared"
 
 const todos: Map<number, Todo> = new Map();
 const users = new Set<number>();
@@ -17,17 +17,17 @@ function userId() {
 function createTodo(ws: ServerWebSocket<number>, text: string) {
   const id = todoId();
   todos.set(id, { text, done: false, id });
-  server.publish("/todos", JSON.stringify({ path: "/todos", data: [...todos.keys()] }));
+  server.publish("/todos", JSON.stringify({ path: "/todos", data: [...todos.keys()] } satisfies ServerMessage));
 }
 
 function removeTodo(ws: ServerWebSocket<number>, id: number) {
   todos.delete(id);
-  server.publish("/todos", JSON.stringify({ path: "/todos", data: [...todos.keys()] }));
+  server.publish("/todos", JSON.stringify({ path: "/todos", data: [...todos.keys()] } satisfies ServerMessage));
 }
 
 function updateTodo(ws: ServerWebSocket<number>, todo: Todo) {
   todos.set(todo.id, todo);
-  server.publish(`/todo/${todo.id}`, JSON.stringify({ path: `/todo/${todo.id}`, data: todo }));
+  server.publish(`/todo/${todo.id}`, JSON.stringify({ path: `/todo/${todo.id}`, data: todo } satisfies ServerMessage));
 }
 
 const server = Bun.serve<number>({
@@ -86,14 +86,14 @@ const server = Bun.serve<number>({
             updateTodo(ws, data.todo);
             break;
           }
-          case MessageType.SubscribeTodo: {
-            ws.subscribe(`/todo/${data.id}`);
-            ws.send(JSON.stringify({ path: `/todo/${data.id}`, data: todos.get(data.id) }))
-            break;
-          }
-          case MessageType.SubscribeTodos: {
-            ws.subscribe("/todos");
-            ws.send(JSON.stringify({ path: "/todos", data: [...todos.keys()] }))
+          case MessageType.Subscribe: {
+            if (data.path === "/todos") {
+              ws.send(JSON.stringify({ path: "/todos", data: [...todos.keys()] } satisfies ServerMessage))
+            } else {
+              const id = Number.parseInt(data.path.slice(data.path.lastIndexOf("/") + 1));
+              ws.send(JSON.stringify({ path: data.path, data: todos.get(id) }))
+            }
+            ws.subscribe(data.path);
             break;
           }
         }

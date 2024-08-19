@@ -1,5 +1,5 @@
 import { AsyncComponent, Context, type CreateElement } from "./index";
-import { type Todo, type ServerMessage, type ServerMessageType, MessageType, type ClientMessage } from "./shared";
+import { type Todo, MessageType, type ClientMessage } from "./shared";
 
 class Layout extends AsyncComponent {
   name = "todos-layout";
@@ -11,7 +11,7 @@ class Layout extends AsyncComponent {
   async update(ctx: Context, h: CreateElement) {
     const list = this.root.getElementById("list") as HTMLDivElement;
     const ws = await ctx.ws("/wss");
-    const todos: number[] = await ws.subscribe("/todos", { type: MessageType.SubscribeTodos });
+    const todos = await ws.subscribe("/todos");
     list.replaceChildren(...todos.map(todoId => h("todo-item", { "todo-id": todoId })))
   }
   eventListeners(ctx: Context, h: CreateElement) {
@@ -37,8 +37,8 @@ class TodoItem extends AsyncComponent {
     const done = this.root.getElementById("done") as HTMLInputElement;
     const text = this.root.getElementById("text") as HTMLSpanElement;
     const ws = await ctx.ws("/wss");
-    const todoId = await ctx.prop("todo-id", "0");
-    const todo: Todo = await ws.subscribe(`/todo/${todoId}`, { type: MessageType.SubscribeTodo, id: Number.parseInt(todoId) } satisfies ClientMessage);
+    const todoId = Number.parseInt(await ctx.prop("todo-id", "0"));
+    const todo = await ws.subscribe(`/todo/${todoId}`);
     done.checked = todo.done;
     text.textContent = todo.text;
   }
@@ -47,8 +47,8 @@ class TodoItem extends AsyncComponent {
     const deleteTodo = this.root.getElementById("delete") as HTMLButtonElement;
     ctx.addListener(done, "change", async (ctx) => {
       const ws = await ctx.ws("/wss");
-      const todoId = await ctx.prop("todo-id", "0");
-      const todo: Todo = await ws.subscribe(`/todo/${todoId}`, { type: MessageType.SubscribeTodo, id: Number.parseInt(todoId) } satisfies ClientMessage);
+      const todoId = Number.parseInt(await ctx.prop("todo-id", "0"));
+      const todo = await ws.subscribe(`/todo/${todoId}`);
       todo.done = done.checked;
       ws.send({ type: MessageType.UpdateTodo, todo } satisfies ClientMessage)
     })
