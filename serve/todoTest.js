@@ -1,83 +1,68 @@
-import { MessageType, type ClientMessage, type Subscriptions } from "./shared";
+// index.ts
+var globalContext = {
+  resources: {},
+  resolves: {},
+  promises: [],
+  websockets: {}
+};
+var NOT_INITIALIZED = Symbol("Data not initialized");
 
-enum PromiseStatus {
-  Fulfilled,
-  Pending,
-  Rejected,
-}
-
-const globalContext = {
-  resources: {} as Record<string, number>,
-  resolves: {} as Record<number, (value: any) => void>,
-  promises: [] as PromiseState<any>[],
-  websockets: {} as Record<string, AsyncWebSocket>,
-}
-
-type Executor<T> = (state: PromiseState<T>) => Promise<T>;
-
-const NOT_INITIALIZED = Symbol("Data not initialized");
-
-class PromiseState<T> {
-  data: T | typeof NOT_INITIALIZED = NOT_INITIALIZED;
+class PromiseState {
+  data = NOT_INITIALIZED;
   initialized = false;
   consumed = false;
-  status: PromiseStatus = PromiseStatus.Pending;
-  promise: Promise<T>;
-  stored: Promise<T>;
-  executor: Executor<T>
-  id: number;
-  constructor(id: number, executor: Executor<T>) {
+  status = 1 /* Pending */;
+  promise;
+  stored;
+  executor;
+  id;
+  constructor(id, executor) {
     this.id = id;
     this.executor = executor;
     this.promise = this.createPromise();
     this.stored ??= this.promise;
   }
-
   async createPromise() {
-    this.status = PromiseStatus.Pending;
+    this.status = 1 /* Pending */;
     try {
       this.data = await this.executor(this);
       this.initialized = true;
-      this.status = PromiseStatus.Fulfilled;
-      return this.data
+      this.status = 0 /* Fulfilled */;
+      return this.data;
     } catch (e) {
-      console.log(e)
-      this.status = PromiseStatus.Rejected;
+      console.log(e);
+      this.status = 2 /* Rejected */;
       throw e;
     } finally {
     }
   }
-
   createResolver() {
-    return new Promise<T>((resolve) => {
+    return new Promise((resolve) => {
       globalContext.resolves[this.id] = resolve;
-    })
+    });
   }
-
-  resolve(value: T) {
+  resolve(value) {
     globalContext.resolves[this.id](value);
   }
-
   cached() {
     return Promise.resolve(this.data);
   }
 }
 
-
 class AsyncWebSocket {
-  ws: WebSocket;
-  openPromise: Promise<void>;
-  promises: Record<string, number> = {};
-  constructor(ws: WebSocket) {
+  ws;
+  openPromise;
+  promises = {};
+  constructor(ws) {
     this.ws = ws;
-    let _resolve: () => void;
+    let _resolve;
     let _reject;
     this.openPromise = new Promise((resolve, reject) => {
       _resolve = resolve;
       _reject = reject;
     });
     this.ws.addEventListener("open", () => {
-      _resolve()
+      _resolve();
     });
     this.ws.addEventListener("message", (ev) => {
       const data = JSON.parse(ev.data);
@@ -85,34 +70,32 @@ class AsyncWebSocket {
       const id = this.promises[data.path];
       if (id !== undefined) {
         const state = globalContext.promises[id];
-        if (state.status === PromiseStatus.Fulfilled) {
+        if (state.status === 0 /* Fulfilled */) {
           state.stored = state.createPromise();
         }
         state.promise = state.stored;
         globalContext.resolves[state.id](data.data);
       }
-    })
+    });
   }
-
-  send(payload: any) {
+  send(payload) {
     this.ws.send(payload);
   }
-
 }
 
 class WebSocketContext {
-  ws: AsyncWebSocket;
-  context: Context;
-  constructor(ws: AsyncWebSocket, context: Context) {
+  ws;
+  context;
+  constructor(ws, context) {
     this.ws = ws;
     this.context = context;
   }
-  async subscribe<K extends keyof Subscriptions>(path: K): Promise<Subscriptions[K]> {
+  async subscribe(path) {
     const id = this.ws.promises[path];
     if (id !== undefined) {
       const state = globalContext.promises[id];
       if (!this.context.promises.has(id)) {
-        if (state.status === PromiseStatus.Pending && state.initialized) {
+        if (state.status === 1 /* Pending */ && state.initialized) {
           state.stored = state.promise;
           state.promise = state.cached();
         }
@@ -121,32 +104,32 @@ class WebSocketContext {
       state.consumed = true;
       return state.promise;
     }
-    const promise = this.context.createPromiseState<Subscriptions[K]>(async (state) => {
+    const promise = this.context.createPromiseState(async (state) => {
       return state.createResolver();
-    })
+    });
     this.ws.promises[path] = promise.id;
     promise.consumed = true;
     await this.ws.openPromise;
-    this.ws.send(JSON.stringify({ type: MessageType.Subscribe, path } satisfies ClientMessage));
+    this.ws.send(JSON.stringify({ type: 3 /* Subscribe */, path }));
     return promise.promise;
   }
-  send(payload: any) {
+  send(payload) {
     this.ws.send(JSON.stringify(payload));
   }
 }
 
-export type CreateElement = <T extends keyof HTMLElementTagNameMap>(tag: T, attributes?: any, ...children: any[]) => { tag: T, attributes: any, children: any[] };
 class InnerContext {
-  properties: Record<string, number> = {};
-  states: Record<string, number> = {};
-  initialVals: Record<string, any> = {};
-  attributes: Set<{ element: HTMLElement, attribute: string, executor: (context: Context) => Promise<any> }> = new Set();
-  renderables: Set<{ parent: Node, index?: number, executor: (context: Context) => Promise<any> }> = new Set();
+  properties = {};
+  states = {};
+  initialVals = {};
+  attributes = new Set;
+  renderables = new Set;
 }
-export class Context {
-  i = new InnerContext();
-  promises = new Set<number>;
-  addListener(element: HTMLElement, event: string, listener: (ctx: Context, e: Event) => Promise<void>) {
+
+class Context {
+  i = new InnerContext;
+  promises = new Set;
+  addListener(element, event, listener) {
     element.addEventListener(event, async (e) => {
       this.promises.forEach((id) => {
         const state = globalContext.promises[id];
@@ -159,18 +142,17 @@ export class Context {
         state.promise = state.stored;
         state.consumed = false;
       });
-    })
+    });
   }
-  create<T>(executor: (ctx: Context, h: CreateElement) => Promise<T>): (ctx: Context) => Promise<T> {
-    return (ctx: Context) => executor(ctx, ctx.h.bind(this.h));
-
+  create(executor) {
+    return (ctx) => executor(ctx, ctx.h.bind(this.h));
   }
-  fetch<T>(resource: string): Promise<T> {
+  fetch(resource) {
     const id = globalContext.resources[resource];
     if (id !== undefined) {
       const state = globalContext.promises[id];
       if (!this.promises.has(id)) {
-        if (state.status === PromiseStatus.Pending && state.initialized) {
+        if (state.status === 1 /* Pending */ && state.initialized) {
           state.stored = state.promise;
           state.promise = state.cached();
         }
@@ -179,7 +161,7 @@ export class Context {
       state.consumed = true;
       return state.promise;
     }
-    const promise = this.createPromiseState<T>((state) => {
+    const promise = this.createPromiseState((state) => {
       if (!state.initialized) {
         return new Promise(async (resolve, reject) => {
           try {
@@ -188,48 +170,50 @@ export class Context {
           } catch {
             reject();
           }
-        })
+        });
       }
-      return new Promise(() => { });
+      return new Promise(() => {
+      });
     });
     globalContext.resources[resource] = promise.id;
     promise.consumed = true;
     return promise.promise;
   }
-  createSocket(url: string) {
-    const sock = new AsyncWebSocket(new WebSocket(url))
+  createSocket(url) {
+    const sock = new AsyncWebSocket(new WebSocket(url));
     globalContext.websockets[url] = sock;
     return sock;
   }
-  async ws(url: string): Promise<WebSocketContext> {
+  async ws(url) {
     const ws = globalContext.websockets[url] ?? this.createSocket(url);
     await ws.openPromise;
     return new WebSocketContext(ws, this);
   }
-  state<T>(resource: string, initial: T): Promise<T> {
+  state(resource, initial) {
     if (this.i.states[resource] !== undefined) {
       if (this.i.initialVals[resource] !== initial) {
         this.set(resource, initial);
         this.i.initialVals[resource] = initial;
       }
-      const state = globalContext.promises[this.i.states[resource]];
-      state.consumed = true;
-      return state.promise;
+      const state2 = globalContext.promises[this.i.states[resource]];
+      state2.consumed = true;
+      return state2.promise;
     }
     this.i.initialVals[resource] = initial;
-    const state = this.createPromiseState<T>((state) => {
-      return state.createResolver();
-    })
+    const state = this.createPromiseState((state2) => {
+      return state2.createResolver();
+    });
     state.resolve(initial);
     this.i.states[resource] = state.id;
     state.consumed = true;
     return state.promise;
   }
-  set<T>(resource: string, value: T) {
+  set(resource, value) {
     if (this.i.states[resource]) {
       const state = globalContext.promises[this.i.states[resource]];
-      if (state.data === value) return;
-      if (state.status === PromiseStatus.Fulfilled) {
+      if (state.data === value)
+        return;
+      if (state.status === 0 /* Fulfilled */) {
         state.stored = state.createPromise();
       }
       state.consumed = false;
@@ -239,32 +223,33 @@ export class Context {
       this.state(resource, value);
     }
   }
-  prop(prop: string, defaultValue: string): Promise<string> {
+  prop(prop, defaultValue) {
     if (this.i.properties[prop] !== undefined) {
-      const state = globalContext.promises[this.i.properties[prop]];
-      state.consumed = true;
-      return state.promise;
+      const state2 = globalContext.promises[this.i.properties[prop]];
+      state2.consumed = true;
+      return state2.promise;
     }
-    const state = this.createPromiseState<string>((state) => {
-      const promise = state.createResolver();
+    const state = this.createPromiseState((state2) => {
+      const promise = state2.createResolver();
       return promise;
-    })
+    });
     state.resolve(defaultValue);
     this.i.properties[prop] = state.id;
     state.consumed = true;
     return state.promise;
   }
-  setProp(prop: string, value: string) {
+  setProp(prop, value) {
     const state = globalContext.promises[this.i.properties[prop]];
     if (state !== undefined) {
-      if (state.data === value) return;
+      if (state.data === value)
+        return;
       state.consumed = false;
       state.resolve(value);
     } else {
       this.prop(prop, value);
     }
   }
-  createPromiseState<T>(promise: Executor<T>) {
+  createPromiseState(promise) {
     const id = globalContext.promises.length;
     const state = new PromiseState(id, promise);
     globalContext.promises.push(state);
@@ -286,7 +271,7 @@ export class Context {
   save() {
     this.promises.forEach((id) => {
       const state = globalContext.promises[id];
-      if (state.status === PromiseStatus.Pending) {
+      if (state.status === 1 /* Pending */) {
         state.stored = state.promise;
         state.promise = state.cached();
       } else {
@@ -294,13 +279,11 @@ export class Context {
       }
     });
   }
-
-  addAttribute(element: HTMLElement, attribute: string, value: any) {
-
+  addAttribute(element, attribute, value) {
     if (attribute[0] === "o" && attribute[1] === "n") {
-      this.addListener(element, attribute.slice(2).toLowerCase(), value)
+      this.addListener(element, attribute.slice(2).toLowerCase(), value);
     } else if (typeof value === "function") {
-      this.i.attributes.add({ element, attribute, executor: value })
+      this.i.attributes.add({ element, attribute, executor: value });
     } else if (attribute in element) {
       element[attribute] = value;
     } else {
@@ -311,36 +294,35 @@ export class Context {
       }
     }
   }
-  addAttributes(element: HTMLElement, attributes: any) {
+  addAttributes(element, attributes) {
     for (const attribute in attributes) {
       this.addAttribute(element, attribute, attributes[attribute]);
     }
   }
-
-  setup(parent: Node, child?: any | any[], childrenSet?: Map<any, Node> | number) {
+  setup(parent, child, childrenSet) {
     const index = childrenSet;
     if (child === undefined) {
       return;
     } else if (typeof child === "function") {
       this.i.renderables.add({ parent, executor: child, index: typeof index === "number" ? index : undefined });
     } else if (Array.isArray(child)) {
-      const toAdd = new Map(child.map(c => [c.attributes?.key, c]));
+      const toAdd = new Map(child.map((c) => [c.attributes?.key, c]));
       if (toAdd.size === 1 && toAdd.has(undefined)) {
-        child.forEach((child, index) => {
-          this.setup(parent, child, index);
-        })
+        child.forEach((child2, index2) => {
+          this.setup(parent, child2, index2);
+        });
       } else {
         for (const todo of parent.childrenSet.keys()) {
           if (!toAdd.has(todo)) {
-            parent.childrenSet.get(todo)!.remove();
+            parent.childrenSet.get(todo).remove();
             parent.childrenSet.delete(todo);
           } else {
             toAdd.delete(todo);
           }
         }
-        toAdd.forEach(child => {
-          this.setup(parent, child, parent.childrenSet);
-        })
+        toAdd.forEach((child2) => {
+          this.setup(parent, child2, parent.childrenSet);
+        });
       }
     } else {
       let element;
@@ -360,65 +342,64 @@ export class Context {
         }
       }
       this.addAttributes(element, child.attributes);
-      element.childrenSet = new Map();
+      element.childrenSet = new Map;
       this.setup(element, child.children);
     }
   }
-  async loop(render: (ctx: Context, h: CreateElement) => ReturnType<CreateElement>, el: AsyncComponent) {
+  async loop(render, el) {
     let tree = render(this, this.h.bind(this));
     let parent = el.root;
-    this.setup(parent, tree)
+    this.setup(parent, tree);
     for (const attribute of this.i.attributes) {
       (async () => {
-        const ctx = new Context();
+        const ctx = new Context;
         ctx.i = this.i;
         const attr = await attribute.executor(ctx);
         this.addAttribute(attribute.element, attribute.attribute, attr);
         ctx.restore();
         while (true) {
-          await Promise.race(Array.from(ctx.promises.keys()).map(id => globalContext.promises[id].promise));
+          await Promise.race(Array.from(ctx.promises.keys()).map((id) => globalContext.promises[id].promise));
           ctx.save();
-          const attr = await attribute.executor(ctx);
-          this.addAttribute(attribute.element, attribute.attribute, attr);
+          const attr2 = await attribute.executor(ctx);
+          this.addAttribute(attribute.element, attribute.attribute, attr2);
           ctx.restore();
         }
       })();
     }
-    for (const render of this.i.renderables) {
+    for (const render2 of this.i.renderables) {
       (async () => {
-        const ctx = new Context();
+        const ctx = new Context;
         ctx.i = this.i;
-        const el = await render.executor(ctx);
-        this.setup(render.parent, el, render.index);
+        const el2 = await render2.executor(ctx);
+        this.setup(render2.parent, el2, render2.index);
         ctx.restore();
         while (true) {
-          await Promise.race(Array.from(ctx.promises.keys()).map(id => globalContext.promises[id].promise));
+          await Promise.race(Array.from(ctx.promises.keys()).map((id) => globalContext.promises[id].promise));
           ctx.save();
-          const el = await render.executor(ctx);
-          this.setup(render.parent, el, render.index);
+          const el3 = await render2.executor(ctx);
+          this.setup(render2.parent, el3, render2.index);
           ctx.restore();
         }
-      })()
-    };
+      })();
+    }
   }
-  h: CreateElement = (tag, attributes, ...children) => {
+  h = (tag, attributes, ...children) => {
     return { tag, attributes, children };
-  }
+  };
 }
 
-export class AsyncComponent extends HTMLElement {
-  name: string = "";
-  context = new Context();
-  root!: ShadowRoot;
-  static observedAttributes: string[] = [];
+class AsyncComponent extends HTMLElement {
+  name = "";
+  context = new Context;
+  root;
+  static observedAttributes = [];
   constructor() {
     super();
   }
   connectedCallback() {
     const shadowRoot = this.attachShadow({ mode: "open" });
     this.root = shadowRoot;
-
-    Object.getPrototypeOf(this).constructor.observedAttributes.forEach((attr: string) => {
+    Object.getPrototypeOf(this).constructor.observedAttributes.forEach((attr) => {
       const value = this.getAttribute(attr);
       if (value) {
         this.context.setProp(attr, value);
@@ -427,18 +408,16 @@ export class AsyncComponent extends HTMLElement {
     this.context.loop(this.render.bind(this), this);
   }
   disconnectedCallback() {
-
   }
   adoptedCallback() {
-
   }
-  attributeChangedCallback(name: string, oldValue: any, newValue: any) {
+  attributeChangedCallback(name, oldValue, newValue) {
     this.context.setProp(name, newValue);
   }
-  template(ctx: Context, h: CreateElement): HTMLElement {
+  template(ctx, h) {
     throw new Error("Must implement template");
   }
-  render(ctx: Context, h: CreateElement): ReturnType<CreateElement> {
+  render(ctx, h) {
     throw new Error("Must implement update");
   }
 }
@@ -446,30 +425,25 @@ export class AsyncComponent extends HTMLElement {
 class Dropdown extends AsyncComponent {
   name = "await-dropdown";
   static observedAttributes = ["items-url"];
-
-  render(ctx: Context, h: CreateElement) {
-    return h("div", {},
-      h("select", { id: "select" }),
-      h("div", { id: "div" }));
+  render(ctx, h) {
+    return h("div", {}, h("select", { id: "select" }), h("div", { id: "div" }));
   }
-
-  async update(ctx: Context, h: CreateElement) {
-    const dropdown = this.root.getElementById("select") as HTMLSelectElement;
-    const div = this.root.getElementById("div") as HTMLDivElement;
+  async update(ctx, h) {
+    const dropdown = this.root.getElementById("select");
+    const div = this.root.getElementById("div");
     dropdown.replaceChildren(h("option", {}, "Loading..."));
-    div.textContent = "Loading..."
+    div.textContent = "Loading...";
     const itemsUrl = await ctx.prop("items-url", "/items");
-    const items = await ctx.fetch<string[]>(itemsUrl);
+    const items = await ctx.fetch(itemsUrl);
     const selected = await ctx.state(itemsUrl + "/selected", items[0]);
-    dropdown.replaceChildren(...items.map(item => h("option", { value: item }, item)));
+    dropdown.replaceChildren(...items.map((item) => h("option", { value: item }, item)));
     dropdown.value = selected;
     div.textContent = selected;
   }
-
-  eventListeners(ctx: Context) {
-    const dropdown = this.root.getElementById("select") as HTMLSelectElement;
-    ctx.addListener(dropdown, "change", async (ctx) => {
-      ctx.set(await ctx.prop("items-url", "/items") + "/selected", dropdown.value);
+  eventListeners(ctx) {
+    const dropdown = this.root.getElementById("select");
+    ctx.addListener(dropdown, "change", async (ctx2) => {
+      ctx2.set(await ctx2.prop("items-url", "/items") + "/selected", dropdown.value);
     });
   }
 }
@@ -477,61 +451,91 @@ class Dropdown extends AsyncComponent {
 class DropdownChanger extends AsyncComponent {
   name = "changer-dropdown";
   static observedAttributes = [];
-  template(ctx: Context, h: CreateElement) {
-    return h("div", {},
-      h("p", {}, "Use this to chagne the url the await dropdown gets it's values from"),
-      h("select", { id: "select" }),
-      h("div", { id: "div" }),
-      h("div", {},
-        h("await-dropdown", { id: "await-dropdown" })));
+  template(ctx, h) {
+    return h("div", {}, h("p", {}, "Use this to chagne the url the await dropdown gets it's values from"), h("select", { id: "select" }), h("div", { id: "div" }), h("div", {}, h("await-dropdown", { id: "await-dropdown" })));
   }
-
-  async update(ctx: Context, h: CreateElement) {
-    const items = await ctx.fetch<string[]>("/itemUrls");
+  async update(ctx, h) {
+    const items = await ctx.fetch("/itemUrls");
     const selected = await ctx.state("/selected", items[0]);
-    const dropdown = this.root.getElementById("select") as HTMLSelectElement;
-    const awaitDropdown = this.root.getElementById("await-dropdown")!;
-    const div = this.root.getElementById("div") as HTMLDivElement;
+    const dropdown = this.root.getElementById("select");
+    const awaitDropdown = this.root.getElementById("await-dropdown");
+    const div = this.root.getElementById("div");
     let test = await ctx.state("/testing", 1);
     ctx.set("/testing", 3);
-    dropdown.replaceChildren(...items.map(item => h("option", { value: item }, item)));
+    dropdown.replaceChildren(...items.map((item) => h("option", { value: item }, item)));
     dropdown.value = selected;
     awaitDropdown.setAttribute("items-url", selected);
     div.textContent = test.toString();
   }
-
-  eventListeners(ctx: Context) {
-    const dropdown = this.root.getElementById("select") as HTMLSelectElement;
-    ctx.addListener(dropdown, "change", async (ctx) => {
-      ctx.set("/selected", dropdown.value);
-    })
+  eventListeners(ctx) {
+    const dropdown = this.root.getElementById("select");
+    ctx.addListener(dropdown, "change", async (ctx2) => {
+      ctx2.set("/selected", dropdown.value);
+    });
   }
 }
 
 class TestElement extends AsyncComponent {
   name = "test-element";
   static observedAttributes = [];
-  template(ctx: Context, h: CreateElement) {
+  template(ctx, h) {
     return h("div", { id: "div" });
   }
-
-  async update(ctx: Context) {
-    const div = this.root.getElementById("div") as HTMLDivElement;
+  async update(ctx) {
+    const div = this.root.getElementById("div");
     let test = await ctx.state("/testing", 1);
     ctx.set("/testing", 3);
-
     div.textContent = test.toString();
   }
 }
-
 customElements.define("await-dropdown", Dropdown);
 customElements.define("changer-dropdown", DropdownChanger);
 customElements.define("test-element", TestElement);
 
-declare global {
-  interface HTMLElementTagNameMap {
-    "await-dropdown": Dropdown;
-    "changer-dropdown": DropdownChanger;
-    "test-element": TestElement;
+// todoTest.ts
+class Layout extends AsyncComponent {
+  name = "todos-layout";
+  render(ctx, h) {
+    return h("div", {}, h("div", {}, h("input", { type: "text", id: "text" }), h("button", {
+      onClick: async (ctx2, ev) => {
+        const ws = await ctx2.ws("/wss");
+        ws.send({ type: 0 /* CreateTodo */, text: ev.target.parentElement.firstElementChild.value });
+      }
+    }, "Create Todo")), h("div", { id: "list" }, async (ctx2) => {
+      const ws = await ctx2.ws("/wss");
+      const todos = await ws.subscribe("/todos");
+      return todos.map((todo) => h("todo-item", { key: todo, "todo-id": todo }));
+    }));
   }
 }
+
+class TodoItem extends AsyncComponent {
+  name = "todo-item";
+  static observedAttributes = ["todo-id"];
+  render(ctx, h) {
+    const todo = ctx.create(async (ctx2) => {
+      const ws = await ctx2.ws("/wss");
+      const todoId = await ctx2.prop("todo-id", "0");
+      return ws.subscribe(`/todo/${todoId}`);
+    });
+    return h("div", {}, h("input", {
+      type: "checkbox",
+      onChange: async (ctx2, ev) => {
+        const ws = await ctx2.ws("/wss");
+        const todoId = await ctx2.prop("todo-id", "0");
+        const todo2 = await ws.subscribe(`/todo/${todoId}`);
+        todo2.done = ev.target.checked;
+        ws.send({ type: 2 /* UpdateTodo */, todo: todo2 });
+      },
+      checked: async (ctx2) => (await todo(ctx2)).done
+    }), h("span", {}, async (ctx2) => (await todo(ctx2)).text), h("button", {
+      onClick: async (ctx2) => {
+        const ws = await ctx2.ws("/wss");
+        const todoId = await ctx2.prop("todo-id", "0");
+        ws.send({ type: 1 /* RemoveTodo */, id: Number.parseInt(todoId) });
+      }
+    }, "Delete"));
+  }
+}
+customElements.define("todos-layout", Layout);
+customElements.define("todo-item", TodoItem);

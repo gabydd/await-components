@@ -94,12 +94,12 @@ class WebSocketContext {
     const id = this.ws.promises[path];
     if (id !== undefined) {
       const state = globalContext.promises[id];
-      if (!this.context.promises.includes(id)) {
+      if (!this.context.promises.has(id)) {
         if (state.status === 1 /* Pending */ && state.initialized) {
           state.stored = state.promise;
           state.promise = state.cached();
         }
-        this.context.promises.push(id);
+        this.context.promises.add(id);
       }
       state.consumed = true;
       return state.promise;
@@ -118,11 +118,17 @@ class WebSocketContext {
   }
 }
 
-class Context {
-  promises = [];
+class InnerContext {
   properties = {};
   states = {};
   initialVals = {};
+  attributes = new Set;
+  renderables = new Set;
+}
+
+class Context {
+  i = new InnerContext;
+  promises = new Set;
   addListener(element, event, listener) {
     element.addEventListener(event, async (e) => {
       this.promises.forEach((id) => {
@@ -138,16 +144,19 @@ class Context {
       });
     });
   }
+  create(executor) {
+    return (ctx) => executor(ctx, ctx.h.bind(this.h));
+  }
   fetch(resource) {
     const id = globalContext.resources[resource];
     if (id !== undefined) {
       const state = globalContext.promises[id];
-      if (!this.promises.includes(id)) {
+      if (!this.promises.has(id)) {
         if (state.status === 1 /* Pending */ && state.initialized) {
           state.stored = state.promise;
           state.promise = state.cached();
         }
-        this.promises.push(id);
+        this.promises.add(id);
       }
       state.consumed = true;
       return state.promise;
@@ -181,27 +190,27 @@ class Context {
     return new WebSocketContext(ws, this);
   }
   state(resource, initial) {
-    if (this.states[resource] !== undefined) {
-      if (this.initialVals[resource] !== initial) {
+    if (this.i.states[resource] !== undefined) {
+      if (this.i.initialVals[resource] !== initial) {
         this.set(resource, initial);
-        this.initialVals[resource] = initial;
+        this.i.initialVals[resource] = initial;
       }
-      const state2 = globalContext.promises[this.states[resource]];
+      const state2 = globalContext.promises[this.i.states[resource]];
       state2.consumed = true;
       return state2.promise;
     }
-    this.initialVals[resource] = initial;
+    this.i.initialVals[resource] = initial;
     const state = this.createPromiseState((state2) => {
       return state2.createResolver();
     });
     state.resolve(initial);
-    this.states[resource] = state.id;
+    this.i.states[resource] = state.id;
     state.consumed = true;
     return state.promise;
   }
   set(resource, value) {
-    if (this.states[resource]) {
-      const state = globalContext.promises[this.states[resource]];
+    if (this.i.states[resource]) {
+      const state = globalContext.promises[this.i.states[resource]];
       if (state.data === value)
         return;
       if (state.status === 0 /* Fulfilled */) {
@@ -215,8 +224,8 @@ class Context {
     }
   }
   prop(prop, defaultValue) {
-    if (this.properties[prop] !== undefined) {
-      const state2 = globalContext.promises[this.properties[prop]];
+    if (this.i.properties[prop] !== undefined) {
+      const state2 = globalContext.promises[this.i.properties[prop]];
       state2.consumed = true;
       return state2.promise;
     }
@@ -225,12 +234,12 @@ class Context {
       return promise;
     });
     state.resolve(defaultValue);
-    this.properties[prop] = state.id;
+    this.i.properties[prop] = state.id;
     state.consumed = true;
     return state.promise;
   }
   setProp(prop, value) {
-    const state = globalContext.promises[this.properties[prop]];
+    const state = globalContext.promises[this.i.properties[prop]];
     if (state !== undefined) {
       if (state.data === value)
         return;
@@ -244,7 +253,7 @@ class Context {
     const id = globalContext.promises.length;
     const state = new PromiseState(id, promise);
     globalContext.promises.push(state);
-    this.promises.push(id);
+    this.promises.add(id);
     return state;
   }
   restore() {
@@ -270,54 +279,46 @@ class Context {
       }
     });
   }
-  async loop(update) {
-    await update(this, this.h.bind(this));
-    this.restore();
-    while (true) {
-      try {
-        await Promise.race(this.promises.map((id) => globalContext.promises[id].promise));
-        this.save();
-        await update(this, this.h.bind(this));
-        this.restore();
-      } catch (error) {
-        console.error(error);
-        this.promises.forEach((id) => {
-          const promise = globalContext.promises[id];
-          if (promise.status === 2 /* Rejected */) {
-            let resolve;
-            let reject;
-            promise.promise = new Promise((_resolve, _reject) => {
-              resolve = _resolve;
-              reject = _reject;
-            });
-            setTimeout(async () => {
-              try {
-                promise.data = await promise.executor(promise);
-                promise.initialized = true;
-                promise.status = 0 /* Fulfilled */;
-                resolve(promise.data);
-              } catch (e) {
-                console.log(e);
-                promise.status = 2 /* Rejected */;
-                reject();
-              } finally {
-              }
-            }, 1000);
-            promise.stored = promise.promise;
-          } else {
-            this.restore();
-          }
-        });
+  async addAttributes(element, attributes) {
+    for (const attribute in attributes) {
+      if (attribute[0] === "o" && attribute[1] === "n") {
+        this.addListener(element, attribute.slice(2).toLowerCase(), attributes[attribute]);
+      }
+      if (typeof attributes[attribute] === "function") {
+        this.i.attributes.add({ element, attribute, executor: attributes[attribute] });
+      } else {
+        element.setAttribute(attribute, attributes[attribute]);
       }
     }
   }
-  h = (tag, attrs, ...children) => {
-    const element = document.createElement(tag);
-    for (const attr in attrs) {
-      element.setAttribute(attr, attrs[attr]);
+  setup(parent, child, index) {
+    if (child === undefined) {
+      return;
+    } else if (typeof child === "function") {
+      this.i.renderables.add({ parent, index: index ?? 0, executor: child });
+    } else if (Array.isArray(child)) {
+      for (let i = 0;i < child.length; i++) {
+        this.setup(parent, child[i], i);
+      }
+    } else {
+      const element = document.createElement(child.tag);
+      parent.appendChild(element);
+      this.addAttributes(element, child.attributes);
+      this.setup(parent, child[2]);
     }
-    element.replaceChildren(...children);
-    return element;
+  }
+  async loop(render, el) {
+    let tree = render(this, this.h.bind(this));
+    let parent = el.root;
+    this.setup(parent, tree);
+    for (const attribute of this.i.attributes) {
+    }
+    for (const render2 of this.i.renderables) {
+    }
+    this.restore();
+  }
+  h = (tag, attributes, ...children) => {
+    return { tag, attributes, children };
   };
 }
 
@@ -330,23 +331,15 @@ class AsyncComponent extends HTMLElement {
     super();
   }
   connectedCallback() {
-    let template = document.getElementById(this.name + "-template");
-    if (!template) {
-      const temp = this.context.h("template", { id: this.name + "-template" });
-      temp.content.appendChild(this.template(this.context, this.context.h.bind(this.context)));
-      template = document.body.appendChild(temp);
-    }
     const shadowRoot = this.attachShadow({ mode: "open" });
     this.root = shadowRoot;
-    shadowRoot.appendChild(template.content.cloneNode(true));
     Object.getPrototypeOf(this).constructor.observedAttributes.forEach((attr) => {
       const value = this.getAttribute(attr);
       if (value) {
         this.context.setProp(attr, value);
       }
     });
-    this.eventListeners(this.context, this.context.h.bind(this.context));
-    this.context.loop(this.update.bind(this));
+    this.context.loop(this.render.bind(this), this);
   }
   disconnectedCallback() {
   }
@@ -358,17 +351,15 @@ class AsyncComponent extends HTMLElement {
   template(ctx, h) {
     throw new Error("Must implement template");
   }
-  async update(ctx, h) {
+  render(ctx, h) {
     throw new Error("Must implement update");
-  }
-  eventListeners(ctx, h) {
   }
 }
 
 class Dropdown extends AsyncComponent {
   name = "await-dropdown";
   static observedAttributes = ["items-url"];
-  template(ctx, h) {
+  render(ctx, h) {
     return h("div", {}, h("select", { id: "select" }), h("div", { id: "div" }));
   }
   async update(ctx, h) {
