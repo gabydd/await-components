@@ -173,6 +173,7 @@ export class Context {
       if (!this.promises.has(id)) {
         if (state.status === PromiseStatus.Pending && state.initialized) {
           state.stored = state.promise;
+          state.status = PromiseStatus.Fulfilled;
           state.promise = state.cached();
         }
         this.promises.add(id);
@@ -283,13 +284,13 @@ export class Context {
   restore() {
     this.promises.forEach((id) => {
       const state = globalContext.promises[id];
-      if (state.consumed) {
+      if (state.consumed && state.status === PromiseStatus.Fulfilled) {
         state.promise = state.createPromise();
         state.stored = state.promise;
-        state.consumed = false;
       } else {
         state.promise = state.stored;
       }
+      state.consumed = false;
       state.store = false;
     });
   }
@@ -308,6 +309,7 @@ export class Context {
   }
 
   addAttribute(element: HTMLElement, attribute: string, value: any) {
+    console.log(attribute, value);
 
     if (attribute[0] === "o" && attribute[1] === "n") {
       this.addListener(element, attribute.slice(2).toLowerCase(), value)
@@ -340,7 +342,10 @@ export class Context {
       if (toAdd.size === 1 && toAdd.has(undefined)) {
         child.forEach((child, index) => {
           this.setup(parent, child, index);
-        })
+        });
+        for (let i = parent.childNodes.length - 1; i >= child.length; i--) {
+          parent.childNodes[i].remove();
+        }
       } else {
         for (const todo of parent.childrenSet.keys()) {
           if (!toAdd.has(todo)) {
@@ -376,6 +381,7 @@ export class Context {
       this.setup(element, child.children);
     }
   }
+  resolve: (value: any) => void = () => { };
   async loop(render: (ctx: Context, h: CreateElement) => ReturnType<CreateElement>, el: AsyncComponent) {
     let tree = render(this, this.h.bind(this));
     let parent = el.root;
@@ -384,8 +390,9 @@ export class Context {
       (async () => {
         const ctx = new Context();
         ctx.i = this.i;
+        ctx.resolve = ((attr) => this.addAttribute(attribute.element, attribute.attribute, attr))
         const attr = await attribute.executor(ctx);
-        this.addAttribute(attribute.element, attribute.attribute, attr);
+        ctx.resolve(attr);
         ctx.restore();
         ctx.promises.forEach(id => this.promises.add(id));
         while (true) {
@@ -393,7 +400,7 @@ export class Context {
           ctx.save();
           const attr = await attribute.executor(ctx);
           ctx.promises.forEach(id => this.promises.add(id));
-          this.addAttribute(attribute.element, attribute.attribute, attr);
+          ctx.resolve(attr);
           ctx.restore();
         }
       })();
@@ -402,16 +409,17 @@ export class Context {
       (async () => {
         const ctx = new Context();
         ctx.i = this.i;
+        ctx.resolve = (value) => this.setup(render.parent, value, render.index)
         const el = await render.executor(ctx);
         ctx.promises.forEach(id => this.promises.add(id));
-        this.setup(render.parent, el, render.index);
+        ctx.resolve(el);
         ctx.restore();
         while (true) {
           await Promise.race(Array.from(ctx.promises.keys()).map(id => globalContext.promises[id].promise));
           ctx.save();
           const el = await render.executor(ctx);
-        ctx.promises.forEach(id => this.promises.add(id));
-          this.setup(render.parent, el, render.index);
+          ctx.promises.forEach(id => this.promises.add(id));
+          ctx.resolve(el);
           ctx.restore();
         }
       })()
@@ -466,10 +474,13 @@ class Dropdown extends AsyncComponent {
   render(ctx: Context, h: CreateElement) {
     const itemsUrl = ctx.create((ctx: Context) => ctx.prop("items-url", "/items"));
     const items = ctx.create(async (ctx: Context) => {
+      ctx.resolve(h("option", {value: "Loading..."}, "Loading..."));
       return ctx.fetch<string[]>(await itemsUrl(ctx));
     })
     const selected = ctx.create(async (ctx: Context) => {
-      return ctx.state(await itemsUrl(ctx) + "/selected", (await items(ctx))[0])
+      const itemsPromise = items(ctx);
+      ctx.resolve("Loading...");
+      return ctx.state(await itemsUrl(ctx) + "/selected", (await itemsPromise)[0])
     })
     return h("div", {},
       h("select", {

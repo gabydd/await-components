@@ -155,6 +155,7 @@ class Context {
       if (!this.promises.has(id)) {
         if (state.status === 1 /* Pending */ && state.initialized) {
           state.stored = state.promise;
+          state.status = 0 /* Fulfilled */;
           state.promise = state.cached();
         }
         this.promises.add(id);
@@ -268,13 +269,13 @@ class Context {
   restore() {
     this.promises.forEach((id) => {
       const state = globalContext.promises[id];
-      if (state.consumed) {
+      if (state.consumed && state.status === 0 /* Fulfilled */) {
         state.promise = state.createPromise();
         state.stored = state.promise;
-        state.consumed = false;
       } else {
         state.promise = state.stored;
       }
+      state.consumed = false;
       state.store = false;
     });
   }
@@ -293,6 +294,7 @@ class Context {
     });
   }
   addAttribute(element, attribute, value) {
+    console.log(attribute, value);
     if (attribute[0] === "o" && attribute[1] === "n") {
       this.addListener(element, attribute.slice(2).toLowerCase(), value);
     } else if (typeof value === "function") {
@@ -324,6 +326,9 @@ class Context {
         child.forEach((child2, index2) => {
           this.setup(parent, child2, index2);
         });
+        for (let i = parent.childNodes.length - 1;i >= child.length; i--) {
+          parent.childNodes[i].remove();
+        }
       } else {
         for (const todo of parent.childrenSet.keys()) {
           if (!toAdd.has(todo)) {
@@ -359,6 +364,8 @@ class Context {
       this.setup(element, child.children);
     }
   }
+  resolve = () => {
+  };
   async loop(render, el) {
     let tree = render(this, this.h.bind(this));
     let parent = el.root;
@@ -367,8 +374,9 @@ class Context {
       (async () => {
         const ctx = new Context;
         ctx.i = this.i;
+        ctx.resolve = (attr2) => this.addAttribute(attribute.element, attribute.attribute, attr2);
         const attr = await attribute.executor(ctx);
-        this.addAttribute(attribute.element, attribute.attribute, attr);
+        ctx.resolve(attr);
         ctx.restore();
         ctx.promises.forEach((id) => this.promises.add(id));
         while (true) {
@@ -376,7 +384,7 @@ class Context {
           ctx.save();
           const attr2 = await attribute.executor(ctx);
           ctx.promises.forEach((id) => this.promises.add(id));
-          this.addAttribute(attribute.element, attribute.attribute, attr2);
+          ctx.resolve(attr2);
           ctx.restore();
         }
       })();
@@ -385,16 +393,17 @@ class Context {
       (async () => {
         const ctx = new Context;
         ctx.i = this.i;
+        ctx.resolve = (value) => this.setup(render2.parent, value, render2.index);
         const el2 = await render2.executor(ctx);
         ctx.promises.forEach((id) => this.promises.add(id));
-        this.setup(render2.parent, el2, render2.index);
+        ctx.resolve(el2);
         ctx.restore();
         while (true) {
           await Promise.race(Array.from(ctx.promises.keys()).map((id) => globalContext.promises[id].promise));
           ctx.save();
           const el3 = await render2.executor(ctx);
           ctx.promises.forEach((id) => this.promises.add(id));
-          this.setup(render2.parent, el3, render2.index);
+          ctx.resolve(el3);
           ctx.restore();
         }
       })();
@@ -445,10 +454,13 @@ class Dropdown extends AsyncComponent {
   render(ctx, h) {
     const itemsUrl = ctx.create((ctx2) => ctx2.prop("items-url", "/items"));
     const items = ctx.create(async (ctx2) => {
+      ctx2.resolve(h("option", { value: "Loading..." }, "Loading..."));
       return ctx2.fetch(await itemsUrl(ctx2));
     });
     const selected = ctx.create(async (ctx2) => {
-      return ctx2.state(await itemsUrl(ctx2) + "/selected", (await items(ctx2))[0]);
+      const itemsPromise = items(ctx2);
+      ctx2.resolve("Loading...");
+      return ctx2.state(await itemsUrl(ctx2) + "/selected", (await itemsPromise)[0]);
     });
     return h("div", {}, h("select", {
       onChange: async (ctx2, ev) => {
