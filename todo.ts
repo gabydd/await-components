@@ -1,74 +1,53 @@
 import { AsyncComponent, Context, type CreateElement } from "./index";
-import { type Todo, MessageType, type ClientMessage } from "./shared";
+import { MessageType, type ClientMessage } from "./shared";
 
 class Layout extends AsyncComponent {
   name = "todos-layout";
-  template(ctx: Context, h: CreateElement) {
+  render(ctx: Context, h: CreateElement) {
     return h("div", {},
-      h("div", {}, h("input", { type: "text", id: "text" }), h("button", { id: "create" }, "Create Todo")),
-      h("div", { id: "list" }))
-  }
-  todoChildren = new Map<number, TodoItem>();
-  async update(ctx: Context, h: CreateElement) {
-    const list = this.root.getElementById("list") as HTMLDivElement;
-    const ws = await ctx.ws("/wss");
-    const todos = await ws.subscribe("/todos");
-    const toAdd = new Set<number>(todos);
-    for (const todo of this.todoChildren.keys()) {
-      if (!toAdd.has(todo)) {
-        this.todoChildren.get(todo)!.remove();
-        this.todoChildren.delete(todo);
-      } else {
-        toAdd.delete(todo);
-      }
-    }
-    for (const todo of toAdd.keys()) {
-      this.todoChildren.set(todo, list.appendChild(h("todo-item", { "todo-id": todo })));
-    }
-  }
-  eventListeners(ctx: Context, h: CreateElement) {
-    const text = this.root.getElementById("text") as HTMLInputElement;
-    const create = this.root.getElementById("create") as HTMLButtonElement;
-    ctx.addListener(create, "click", async (ctx) => {
-      const ws = await ctx.ws("/wss");
-      ws.send({ type: MessageType.CreateTodo, text: text.value } satisfies ClientMessage)
-    });
+      h("div", {}, h("input", { type: "text", id: "text" }), h("button", {
+        onClick: async (ctx: Context, ev: any) => {
+          const ws = await ctx.ws("/wss");
+          ws.send({ type: MessageType.CreateTodo, text: ev.target.parentElement.firstElementChild.value } satisfies ClientMessage)
+        }
+      }, "Create Todo")),
+      h("div", { id: "list" },
+        async (ctx: Context) => {
+          const ws = await ctx.ws("/wss");
+          const todos = await ws.subscribe("/todos");
+          return todos.map(todo => h("todo-item", { key: todo, "todo-id": todo }))
+        }
+      ))
   }
 }
 
 class TodoItem extends AsyncComponent {
   name = "todo-item";
   static observedAttributes = ["todo-id"];
-  template(ctx: Context, h: CreateElement) {
+  render(ctx: Context, h: CreateElement) {
+    const todo = ctx.create(async (ctx: Context) => {
+      const ws = await ctx.ws("/wss");
+      const todoId = await ctx.prop("todo-id", "0");
+      return ws.subscribe(`/todo/${todoId}`);
+    });
     return h("div", {},
-      h("input", { id: "done", type: "checkbox" }),
-      h("span", { id: "text" }),
-      h("button", { id: "delete" }, "Delete"))
-  }
-  async update(ctx: Context, h: CreateElement) {
-    const done = this.root.getElementById("done") as HTMLInputElement;
-    const text = this.root.getElementById("text") as HTMLSpanElement;
-    const ws = await ctx.ws("/wss");
-    const todoId = await ctx.prop("todo-id", "0");
-    const todo = await ws.subscribe(`/todo/${todoId}`);
-    done.checked = todo.done;
-    text.textContent = todo.text;
-  }
-  eventListeners(ctx: Context, h: CreateElement) {
-    const done = this.root.getElementById("done") as HTMLInputElement;
-    const deleteTodo = this.root.getElementById("delete") as HTMLButtonElement;
-    ctx.addListener(done, "change", async (ctx) => {
-      const ws = await ctx.ws("/wss");
-      const todoId = await ctx.prop("todo-id", "0");
-      const todo = await ws.subscribe(`/todo/${todoId}`);
-      todo.done = done.checked;
-      ws.send({ type: MessageType.UpdateTodo, todo } satisfies ClientMessage)
-    })
-    ctx.addListener(deleteTodo, "click", async (ctx) => {
-      const ws = await ctx.ws("/wss");
-      const todoId = await ctx.prop("todo-id", "0");
-      ws.send({ type: MessageType.RemoveTodo, id: Number.parseInt(todoId) } satisfies ClientMessage)
-    })
+      h("input", {
+        type: "checkbox", onChange: async (ctx: Context, ev: any) => {
+          const ws = await ctx.ws("/wss");
+          const todoId = await ctx.prop("todo-id", "0");
+          const todo = await ws.subscribe(`/todo/${todoId}`);
+          todo.done = ev.target.checked;
+          ws.send({ type: MessageType.UpdateTodo, todo } satisfies ClientMessage)
+        }, checked: async (ctx: Context) => (await todo(ctx)).done
+      }),
+      h("span", {}, async (ctx: Context) => (await todo(ctx)).text),
+      h("button", {
+        onClick: async (ctx: Context) => {
+          const ws = await ctx.ws("/wss");
+          const todoId = await ctx.prop("todo-id", "0");
+          ws.send({ type: MessageType.RemoveTodo, id: Number.parseInt(todoId) } satisfies ClientMessage)
+        }
+      }, "Delete"))
   }
 }
 

@@ -11,6 +11,7 @@ class PromiseState {
   data = NOT_INITIALIZED;
   initialized = false;
   consumed = false;
+  store = false;
   status = 1 /* Pending */;
   promise;
   stored;
@@ -190,12 +191,16 @@ class Context {
     return new WebSocketContext(ws, this);
   }
   state(resource, initial) {
-    if (this.i.states[resource] !== undefined) {
+    const id = this.i.states[resource];
+    if (id !== undefined) {
       if (this.i.initialVals[resource] !== initial) {
         this.set(resource, initial);
         this.i.initialVals[resource] = initial;
       }
-      const state2 = globalContext.promises[this.i.states[resource]];
+      const state2 = globalContext.promises[id];
+      if (!this.promises.has(id)) {
+        this.promises.add(id);
+      }
       state2.consumed = true;
       return state2.promise;
     }
@@ -224,8 +229,12 @@ class Context {
     }
   }
   prop(prop, defaultValue) {
-    if (this.i.properties[prop] !== undefined) {
-      const state2 = globalContext.promises[this.i.properties[prop]];
+    const id = this.i.properties[prop];
+    if (id !== undefined) {
+      const state2 = globalContext.promises[id];
+      if (!this.promises.has(id)) {
+        this.promises.add(id);
+      }
       state2.consumed = true;
       return state2.promise;
     }
@@ -266,45 +275,88 @@ class Context {
       } else {
         state.promise = state.stored;
       }
+      state.store = false;
     });
   }
   save() {
     this.promises.forEach((id) => {
       const state = globalContext.promises[id];
+      if (state.store)
+        return;
       if (state.status === 1 /* Pending */) {
         state.stored = state.promise;
         state.promise = state.cached();
       } else {
         state.stored = state.createPromise();
       }
+      state.store = true;
     });
   }
-  async addAttributes(element, attributes) {
-    for (const attribute in attributes) {
-      if (attribute[0] === "o" && attribute[1] === "n") {
-        this.addListener(element, attribute.slice(2).toLowerCase(), attributes[attribute]);
-      }
-      if (typeof attributes[attribute] === "function") {
-        this.i.attributes.add({ element, attribute, executor: attributes[attribute] });
+  addAttribute(element, attribute, value) {
+    if (attribute[0] === "o" && attribute[1] === "n") {
+      this.addListener(element, attribute.slice(2).toLowerCase(), value);
+    } else if (typeof value === "function") {
+      this.i.attributes.add({ element, attribute, executor: value });
+    } else if (attribute in element) {
+      element[attribute] = value;
+    } else {
+      if (value === false) {
+        element.removeAttribute(attribute);
       } else {
-        element.setAttribute(attribute, attributes[attribute]);
+        element.setAttribute(attribute, value);
       }
     }
   }
-  setup(parent, child, index) {
+  addAttributes(element, attributes) {
+    for (const attribute in attributes) {
+      this.addAttribute(element, attribute, attributes[attribute]);
+    }
+  }
+  setup(parent, child, childrenSet) {
+    const index = childrenSet;
     if (child === undefined) {
       return;
     } else if (typeof child === "function") {
-      this.i.renderables.add({ parent, index: index ?? 0, executor: child });
+      this.i.renderables.add({ parent, executor: child, index: typeof index === "number" ? index : undefined });
     } else if (Array.isArray(child)) {
-      for (let i = 0;i < child.length; i++) {
-        this.setup(parent, child[i], i);
+      const toAdd = new Map(child.map((c) => [c.attributes?.key, c]));
+      if (toAdd.size === 1 && toAdd.has(undefined)) {
+        child.forEach((child2, index2) => {
+          this.setup(parent, child2, index2);
+        });
+      } else {
+        for (const todo of parent.childrenSet.keys()) {
+          if (!toAdd.has(todo)) {
+            parent.childrenSet.get(todo).remove();
+            parent.childrenSet.delete(todo);
+          } else {
+            toAdd.delete(todo);
+          }
+        }
+        toAdd.forEach((child2) => {
+          this.setup(parent, child2, parent.childrenSet);
+        });
       }
     } else {
-      const element = document.createElement(child.tag);
-      parent.appendChild(element);
+      let element;
+      if (typeof child !== "object") {
+        element = document.createTextNode(child);
+      } else {
+        element = document.createElement(child.tag);
+      }
+      if (parent.childrenSet?.size > 0 || childrenSet instanceof Map) {
+        parent.appendChild(element);
+        child.attributes?.key !== undefined && childrenSet?.set(child.attributes.key, element);
+      } else {
+        if (typeof index === "number" && parent.childNodes[index] !== undefined) {
+          parent.replaceChild(element, parent.childNodes[index]);
+        } else {
+          parent.appendChild(element);
+        }
+      }
       this.addAttributes(element, child.attributes);
-      this.setup(parent, child[2]);
+      element.childrenSet = new Map;
+      this.setup(element, child.children);
     }
   }
   async loop(render, el) {
@@ -312,10 +364,41 @@ class Context {
     let parent = el.root;
     this.setup(parent, tree);
     for (const attribute of this.i.attributes) {
+      (async () => {
+        const ctx = new Context;
+        ctx.i = this.i;
+        const attr = await attribute.executor(ctx);
+        this.addAttribute(attribute.element, attribute.attribute, attr);
+        ctx.restore();
+        ctx.promises.forEach((id) => this.promises.add(id));
+        while (true) {
+          await Promise.race(Array.from(ctx.promises.keys()).map((id) => globalContext.promises[id].promise));
+          ctx.save();
+          const attr2 = await attribute.executor(ctx);
+          ctx.promises.forEach((id) => this.promises.add(id));
+          this.addAttribute(attribute.element, attribute.attribute, attr2);
+          ctx.restore();
+        }
+      })();
     }
     for (const render2 of this.i.renderables) {
+      (async () => {
+        const ctx = new Context;
+        ctx.i = this.i;
+        const el2 = await render2.executor(ctx);
+        ctx.promises.forEach((id) => this.promises.add(id));
+        this.setup(render2.parent, el2, render2.index);
+        ctx.restore();
+        while (true) {
+          await Promise.race(Array.from(ctx.promises.keys()).map((id) => globalContext.promises[id].promise));
+          ctx.save();
+          const el3 = await render2.executor(ctx);
+          ctx.promises.forEach((id) => this.promises.add(id));
+          this.setup(render2.parent, el3, render2.index);
+          ctx.restore();
+        }
+      })();
     }
-    this.restore();
   }
   h = (tag, attributes, ...children) => {
     return { tag, attributes, children };
@@ -360,66 +443,58 @@ class Dropdown extends AsyncComponent {
   name = "await-dropdown";
   static observedAttributes = ["items-url"];
   render(ctx, h) {
-    return h("div", {}, h("select", { id: "select" }), h("div", { id: "div" }));
-  }
-  async update(ctx, h) {
-    const dropdown = this.root.getElementById("select");
-    const div = this.root.getElementById("div");
-    dropdown.replaceChildren(h("option", {}, "Loading..."));
-    div.textContent = "Loading...";
-    const itemsUrl = await ctx.prop("items-url", "/items");
-    const items = await ctx.fetch(itemsUrl);
-    const selected = await ctx.state(itemsUrl + "/selected", items[0]);
-    dropdown.replaceChildren(...items.map((item) => h("option", { value: item }, item)));
-    dropdown.value = selected;
-    div.textContent = selected;
-  }
-  eventListeners(ctx) {
-    const dropdown = this.root.getElementById("select");
-    ctx.addListener(dropdown, "change", async (ctx2) => {
-      ctx2.set(await ctx2.prop("items-url", "/items") + "/selected", dropdown.value);
+    const itemsUrl = ctx.create((ctx2) => ctx2.prop("items-url", "/items"));
+    const items = ctx.create(async (ctx2) => {
+      return ctx2.fetch(await itemsUrl(ctx2));
     });
+    const selected = ctx.create(async (ctx2) => {
+      return ctx2.state(await itemsUrl(ctx2) + "/selected", (await items(ctx2))[0]);
+    });
+    return h("div", {}, h("select", {
+      onChange: async (ctx2, ev) => {
+        ctx2.set(await itemsUrl(ctx2) + "/selected", ev.target.value);
+      },
+      value: selected
+    }, async (ctx2) => (await items(ctx2)).map((item) => h("option", { value: item }, item))), h("div", {}, selected), h("div", {}, async (ctx2) => {
+      let test = await ctx2.state("/testing", 1);
+      ctx2.set("/testing", 3);
+      return test;
+    }));
   }
 }
 
 class DropdownChanger extends AsyncComponent {
   name = "changer-dropdown";
   static observedAttributes = [];
-  template(ctx, h) {
-    return h("div", {}, h("p", {}, "Use this to chagne the url the await dropdown gets it's values from"), h("select", { id: "select" }), h("div", { id: "div" }), h("div", {}, h("await-dropdown", { id: "await-dropdown" })));
-  }
-  async update(ctx, h) {
-    const items = await ctx.fetch("/itemUrls");
-    const selected = await ctx.state("/selected", items[0]);
-    const dropdown = this.root.getElementById("select");
-    const awaitDropdown = this.root.getElementById("await-dropdown");
-    const div = this.root.getElementById("div");
-    let test = await ctx.state("/testing", 1);
-    ctx.set("/testing", 3);
-    dropdown.replaceChildren(...items.map((item) => h("option", { value: item }, item)));
-    dropdown.value = selected;
-    awaitDropdown.setAttribute("items-url", selected);
-    div.textContent = test.toString();
-  }
-  eventListeners(ctx) {
-    const dropdown = this.root.getElementById("select");
-    ctx.addListener(dropdown, "change", async (ctx2) => {
-      ctx2.set("/selected", dropdown.value);
+  render(ctx, h) {
+    const items = ctx.create((ctx2) => {
+      return ctx2.fetch("/itemUrls");
     });
+    const selected = ctx.create(async (ctx2) => {
+      return ctx2.state("/selected", (await items(ctx2))[0]);
+    });
+    return h("div", {}, h("p", {}, "Use this to chagne the url the await dropdown gets it's values from"), h("select", {
+      onChange: (ctx2, ev) => {
+        ctx2.set("/selected", ev.target.value);
+      },
+      value: selected
+    }, async (ctx2) => (await items(ctx2)).map((item) => h("option", { value: item }, item))), h("div", {}, async () => {
+      let test = await ctx.state("/testing", 1);
+      ctx.set("/testing", 3);
+      return test;
+    }), h("div", {}, h("await-dropdown", { "items-url": selected })));
   }
 }
 
 class TestElement extends AsyncComponent {
   name = "test-element";
   static observedAttributes = [];
-  template(ctx, h) {
-    return h("div", { id: "div" });
-  }
-  async update(ctx) {
-    const div = this.root.getElementById("div");
-    let test = await ctx.state("/testing", 1);
-    ctx.set("/testing", 3);
-    div.textContent = test.toString();
+  render(ctx, h) {
+    return h("div", {}, async (ctx2) => {
+      let test = await ctx2.state("/testing", 1);
+      ctx2.set("/testing", 3);
+      return test;
+    });
   }
 }
 customElements.define("await-dropdown", Dropdown);
@@ -429,67 +504,46 @@ customElements.define("test-element", TestElement);
 // todo.ts
 class Layout extends AsyncComponent {
   name = "todos-layout";
-  template(ctx, h) {
-    return h("div", {}, h("div", {}, h("input", { type: "text", id: "text" }), h("button", { id: "create" }, "Create Todo")), h("div", { id: "list" }));
-  }
-  todoChildren = new Map;
-  async update(ctx, h) {
-    const list = this.root.getElementById("list");
-    const ws = await ctx.ws("/wss");
-    const todos = await ws.subscribe("/todos");
-    const toAdd = new Set(todos);
-    for (const todo of this.todoChildren.keys()) {
-      if (!toAdd.has(todo)) {
-        this.todoChildren.get(todo).remove();
-        this.todoChildren.delete(todo);
-      } else {
-        toAdd.delete(todo);
+  render(ctx, h) {
+    return h("div", {}, h("div", {}, h("input", { type: "text", id: "text" }), h("button", {
+      onClick: async (ctx2, ev) => {
+        const ws = await ctx2.ws("/wss");
+        ws.send({ type: 0 /* CreateTodo */, text: ev.target.parentElement.firstElementChild.value });
       }
-    }
-    for (const todo of toAdd.keys()) {
-      this.todoChildren.set(todo, list.appendChild(h("todo-item", { "todo-id": todo })));
-    }
-  }
-  eventListeners(ctx, h) {
-    const text = this.root.getElementById("text");
-    const create = this.root.getElementById("create");
-    ctx.addListener(create, "click", async (ctx2) => {
+    }, "Create Todo")), h("div", { id: "list" }, async (ctx2) => {
       const ws = await ctx2.ws("/wss");
-      ws.send({ type: 0 /* CreateTodo */, text: text.value });
-    });
+      const todos = await ws.subscribe("/todos");
+      return todos.map((todo) => h("todo-item", { key: todo, "todo-id": todo }));
+    }));
   }
 }
 
 class TodoItem extends AsyncComponent {
   name = "todo-item";
   static observedAttributes = ["todo-id"];
-  template(ctx, h) {
-    return h("div", {}, h("input", { id: "done", type: "checkbox" }), h("span", { id: "text" }), h("button", { id: "delete" }, "Delete"));
-  }
-  async update(ctx, h) {
-    const done = this.root.getElementById("done");
-    const text = this.root.getElementById("text");
-    const ws = await ctx.ws("/wss");
-    const todoId = await ctx.prop("todo-id", "0");
-    const todo = await ws.subscribe(`/todo/${todoId}`);
-    done.checked = todo.done;
-    text.textContent = todo.text;
-  }
-  eventListeners(ctx, h) {
-    const done = this.root.getElementById("done");
-    const deleteTodo = this.root.getElementById("delete");
-    ctx.addListener(done, "change", async (ctx2) => {
+  render(ctx, h) {
+    const todo = ctx.create(async (ctx2) => {
       const ws = await ctx2.ws("/wss");
       const todoId = await ctx2.prop("todo-id", "0");
-      const todo = await ws.subscribe(`/todo/${todoId}`);
-      todo.done = done.checked;
-      ws.send({ type: 2 /* UpdateTodo */, todo });
+      return ws.subscribe(`/todo/${todoId}`);
     });
-    ctx.addListener(deleteTodo, "click", async (ctx2) => {
-      const ws = await ctx2.ws("/wss");
-      const todoId = await ctx2.prop("todo-id", "0");
-      ws.send({ type: 1 /* RemoveTodo */, id: Number.parseInt(todoId) });
-    });
+    return h("div", {}, h("input", {
+      type: "checkbox",
+      onChange: async (ctx2, ev) => {
+        const ws = await ctx2.ws("/wss");
+        const todoId = await ctx2.prop("todo-id", "0");
+        const todo2 = await ws.subscribe(`/todo/${todoId}`);
+        todo2.done = ev.target.checked;
+        ws.send({ type: 2 /* UpdateTodo */, todo: todo2 });
+      },
+      checked: async (ctx2) => (await todo(ctx2)).done
+    }), h("span", {}, async (ctx2) => (await todo(ctx2)).text), h("button", {
+      onClick: async (ctx2) => {
+        const ws = await ctx2.ws("/wss");
+        const todoId = await ctx2.prop("todo-id", "0");
+        ws.send({ type: 1 /* RemoveTodo */, id: Number.parseInt(todoId) });
+      }
+    }, "Delete"));
   }
 }
 customElements.define("todos-layout", Layout);

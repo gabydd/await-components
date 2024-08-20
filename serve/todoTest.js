@@ -426,66 +426,58 @@ class Dropdown extends AsyncComponent {
   name = "await-dropdown";
   static observedAttributes = ["items-url"];
   render(ctx, h) {
-    return h("div", {}, h("select", { id: "select" }), h("div", { id: "div" }));
-  }
-  async update(ctx, h) {
-    const dropdown = this.root.getElementById("select");
-    const div = this.root.getElementById("div");
-    dropdown.replaceChildren(h("option", {}, "Loading..."));
-    div.textContent = "Loading...";
-    const itemsUrl = await ctx.prop("items-url", "/items");
-    const items = await ctx.fetch(itemsUrl);
-    const selected = await ctx.state(itemsUrl + "/selected", items[0]);
-    dropdown.replaceChildren(...items.map((item) => h("option", { value: item }, item)));
-    dropdown.value = selected;
-    div.textContent = selected;
-  }
-  eventListeners(ctx) {
-    const dropdown = this.root.getElementById("select");
-    ctx.addListener(dropdown, "change", async (ctx2) => {
-      ctx2.set(await ctx2.prop("items-url", "/items") + "/selected", dropdown.value);
+    const itemsUrl = ctx.create((ctx2) => ctx2.prop("items-url", "/items"));
+    const items = ctx.create(async (ctx2) => {
+      return ctx2.fetch(await itemsUrl(ctx2));
     });
+    const selected = ctx.create(async (ctx2) => {
+      return ctx2.state("/selected", (await items(ctx2))[0]);
+    });
+    return h("div", {}, h("select", {
+      onChange: async (ctx2, ev) => {
+        ctx2.set(await itemsUrl(ctx2) + "/selected", ev.target.value);
+      },
+      value: selected
+    }, async (ctx2) => (await items(ctx2)).map((item) => h("option", { value: item }, item))), h("div", {}, selected), h("div", {}, async () => {
+      let test = await ctx.state("/testing", 1);
+      ctx.set("/testing", 3);
+      return test;
+    }));
   }
 }
 
 class DropdownChanger extends AsyncComponent {
   name = "changer-dropdown";
   static observedAttributes = [];
-  template(ctx, h) {
-    return h("div", {}, h("p", {}, "Use this to chagne the url the await dropdown gets it's values from"), h("select", { id: "select" }), h("div", { id: "div" }), h("div", {}, h("await-dropdown", { id: "await-dropdown" })));
-  }
-  async update(ctx, h) {
-    const items = await ctx.fetch("/itemUrls");
-    const selected = await ctx.state("/selected", items[0]);
-    const dropdown = this.root.getElementById("select");
-    const awaitDropdown = this.root.getElementById("await-dropdown");
-    const div = this.root.getElementById("div");
-    let test = await ctx.state("/testing", 1);
-    ctx.set("/testing", 3);
-    dropdown.replaceChildren(...items.map((item) => h("option", { value: item }, item)));
-    dropdown.value = selected;
-    awaitDropdown.setAttribute("items-url", selected);
-    div.textContent = test.toString();
-  }
-  eventListeners(ctx) {
-    const dropdown = this.root.getElementById("select");
-    ctx.addListener(dropdown, "change", async (ctx2) => {
-      ctx2.set("/selected", dropdown.value);
+  render(ctx, h) {
+    const items = ctx.create((ctx2) => {
+      return ctx2.fetch("/itemUrls");
     });
+    const selected = ctx.create(async (ctx2) => {
+      return ctx2.state("/selected", (await items(ctx2))[0]);
+    });
+    return h("div", {}, h("p", {}, "Use this to chagne the url the await dropdown gets it's values from"), h("select", {
+      onChange: (ctx2, ev) => {
+        ctx2.set("/selected", ev.target.value);
+      },
+      value: selected
+    }, async (ctx2) => (await items(ctx2)).map((item) => h("option", { value: item }, item))), h("div", {}, async () => {
+      let test = await ctx.state("/testing", 1);
+      ctx.set("/testing", 3);
+      return test;
+    }), h("div", {}, h("await-dropdown", { "items-url": selected })));
   }
 }
 
 class TestElement extends AsyncComponent {
   name = "test-element";
   static observedAttributes = [];
-  template(ctx, h) {
-    return h("div", { id: "div" });
-  }
-  async update(ctx) {
-    const div = this.root.getElementById("div");
-    let test = await ctx.state("/testing", 1);
-    ctx.set("/testing", 3);
-    div.textContent = test.toString();
+  render(ctx, h) {
+    return h("div", {}, async (ctx2) => {
+      let test = await ctx2.state("/testing", 1);
+      ctx2.set("/testing", 3);
+      return test;
+    });
   }
 }
 customElements.define("await-dropdown", Dropdown);
