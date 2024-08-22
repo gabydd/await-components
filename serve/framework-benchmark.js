@@ -586,50 +586,96 @@ customElements.define("await-dropdown", Dropdown);
 customElements.define("changer-dropdown", DropdownChanger);
 customElements.define("test-element", TestElement);
 
-// todo.ts
-class Layout extends AsyncComponent {
-  name = "todos-layout";
+// framework-benchmark.ts
+var random = function(max) {
+  return Math.round(Math.random() * 1000) % max;
+};
+var buildData = function(ctx, count) {
+  const data = new Array(count);
+  for (let i = 0;i < count; i++) {
+    data[i] = { text: ctx.global(`${adjectives[random(adjectives.length)]} ${colors[random(colors.length)]} ${nouns[random(nouns.length)]}`), id: ctx.global(nextId++) };
+  }
+  return data;
+};
+var adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"];
+var colors = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown", "white", "black", "orange"];
+var nouns = ["table", "chair", "house", "bbq", "desk", "car", "pony", "cookie", "sandwich", "burger", "pizza", "mouse", "keyboard"];
+
+class Button extends AsyncComponent {
+  name = "button-component";
+  useShadow = false;
+  onClick = (ctx) => {
+  };
   render(ctx, h) {
-    return h("div", {}, h("div", {}, h("input", { type: "text", id: "text" }), h("button", {
-      onClick: async (ctx2, ev) => {
-        const ws = await ctx2.ws("/wss");
-        ws.send({ type: 0 /* CreateTodo */, text: ev.target.parentElement.firstElementChild.value });
+    return h("button", { type: "button", id: async (ctx2) => ctx2.prop("id"), onClick: this.onClick, class: "btn btn-primary btn-block" }, h("slot"));
+  }
+}
+var nextId = 1;
+var rows = globalCtx.global([]);
+var selected = globalCtx.global(0);
+
+class Layout extends AsyncComponent {
+  useShadow = false;
+  row(ctx, h, row) {
+    const text = ctx.create(async (ctx2) => {
+      return await row.text.promise(ctx2);
+    });
+    const rowId = ctx.create(async (ctx2) => {
+      return await row.id.promise(ctx2);
+    });
+    return h("tr", { class: async (ctx2) => await selected.promise(ctx2) === await rowId(ctx2) ? "danger" : "", key: row.id.get() }, h("td", { class: "col-md-1" }, rowId), h("td", { class: "col-md-1" }, h("a", { onClick: () => selected.set(row.id.get()) }, text)), h("td", { class: "col-md-1" }, h("a", { onClick: () => rows.set(rows.get().toSpliced(rows.get().findIndex((check) => row.id.get() === check.id.get()), 1)) }, h("span", { class: "glyphicon glyphicon-remove", "aria-hidden": "true" }))));
+  }
+  render(ctx, h) {
+    return h("div", { class: "container" }, h("div", { class: "jumbotron" }, h("div", { class: "row" }, h("div", { class: "col-md-6" }, h("h1", {}, "")), h("div", { class: "col-md-6" }, h("div", { class: "row" }, h("action-button", { id: "run", onClick: async (ctx2) => {
+      rows.set(buildData(ctx2, 1000));
+    } }, "Create 1,000 rows"), h("action-button", { id: "runlots", onClick: async (ctx2) => {
+      rows.set(buildData(ctx2, 1e4));
+    } }, "Create 10,000 rows"), h("action-button", { id: "add", onClick: async (ctx2) => {
+      rows.set([...rows.get(), ...buildData(ctx2, 1000)]);
+    } }, "Append 1,000 rows"), h("action-button", {
+      id: "update",
+      onClick: async (ctx2) => {
+        const data = rows.get();
+        for (let i = 0, len = rows.get().length;i < len; i += 10) {
+          data[i].text.set(data[i].text.get() + " !!!");
+        }
       }
-    }, "Create Todo")), h("div", { id: "list" }, async (ctx2) => {
-      const ws = await ctx2.ws("/wss");
-      const todos = await ws.subscribe("/todos");
-      return todos.map((todo) => h("todo-item", { key: todo, "todo-id": todo }));
-    }));
+    }, "Update every 10th row"), h("action-button", { id: "clear", onClick: async (ctx2) => {
+      rows.set([]);
+    } }, "Clear"), h("action-button", {
+      id: "swaprows",
+      onClick: async (ctx2) => {
+        const data = rows.get();
+        if (data.length > 998) {
+          const storedText = data[1].text.get();
+          const storedId = data[1].id.get();
+          data[1].text.set(data[998].text.get());
+          data[1].id.set(data[998].id.get());
+          data[998].text.set(storedText);
+          data[998].id.set(storedId);
+        }
+      }
+    }, "Swap"))))), h("table", { class: "table table-hover table-striped test-data" }, h("tbody", {}, async (ctx2) => {
+      return (await rows.promise(ctx2)).map((row) => this.row(ctx2, h, row));
+    })));
   }
 }
 
-class TodoItem extends AsyncComponent {
-  name = "todo-item";
-  static observedAttributes = ["todo-id"];
+class Row extends AsyncComponent {
+  name = "bench-row";
+  text = undefined;
+  rowId = undefined;
+  useShadow = false;
   render(ctx, h) {
-    const todo = ctx.create(async (ctx2) => {
-      const ws = await ctx2.ws("/wss");
-      const todoId = await ctx2.prop("todo-id", "0");
-      return ws.subscribe(`/todo/${todoId}`);
+    const text = ctx.create(async (ctx2) => {
+      return await this.text.promise(ctx2);
     });
-    return h("div", {}, h("input", {
-      type: "checkbox",
-      onChange: async (ctx2, ev) => {
-        const ws = await ctx2.ws("/wss");
-        const todoId = await ctx2.prop("todo-id", "0");
-        const todo2 = await ws.subscribe(`/todo/${todoId}`);
-        todo2.done = ev.target.checked;
-        ws.send({ type: 2 /* UpdateTodo */, todo: todo2 });
-      },
-      checked: async (ctx2) => (await todo(ctx2)).done
-    }), h("span", {}, async (ctx2) => (await todo(ctx2)).text), h("button", {
-      onClick: async (ctx2) => {
-        const ws = await ctx2.ws("/wss");
-        const todoId = await ctx2.prop("todo-id", "0");
-        ws.send({ type: 1 /* RemoveTodo */, id: Number.parseInt(todoId) });
-      }
-    }, "Delete"));
+    const rowId = ctx.create(async (ctx2) => {
+      return await this.rowId.promise(ctx2);
+    });
+    return h("tr", { class: async (ctx2) => await selected.promise(ctx2) === await rowId(ctx2) ? "danger" : "" }, h("td", { class: "col-md-1" }, rowId), h("td", { class: "col-md-1" }, h("a", { onClick: () => selected.set(this.rowId.get()) }, text)), h("td", { class: "col-md-1" }, h("a", { onClick: () => rows.set(rows.get().toSpliced(rows.get().findIndex((row) => row.id.get() === this.rowId.get()), 1)) }, h("span", { class: "glyphicon glyphicon-remove", "aria-hidden": "true" }))));
   }
 }
-customElements.define("todos-layout", Layout);
-customElements.define("todo-item", TodoItem);
+customElements.define("action-button", Button);
+customElements.define("bench-layout", Layout);
+customElements.define("bench-row", Row);

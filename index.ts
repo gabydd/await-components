@@ -60,7 +60,7 @@ class PromiseState<T> {
   }
 
   cached() {
-    return Promise.resolve(this.data);
+    return Promise.resolve(this.data as T);
   }
 }
 
@@ -82,7 +82,6 @@ class AsyncWebSocket {
     });
     this.ws.addEventListener("message", (ev) => {
       const data = JSON.parse(ev.data);
-      console.log(data);
       const id = this.promises[data.path];
       if (id !== undefined) {
         const state = globalContext.promises[id];
@@ -137,12 +136,49 @@ class WebSocketContext {
 }
 
 export type CreateElement = <T extends keyof HTMLElementTagNameMap>(tag: T, attributes?: any, ...children: any[]) => { tag: T, attributes: any, children: any[] };
+type Abort = { promise: Promise<void>, resolve: () => void, aborted: boolean };
 class InnerContext {
   properties: Record<string, number> = {};
   states: Record<string, number> = {};
   initialVals: Record<string, any> = {};
-  attributes: Set<{ element: HTMLElement, attribute: string, executor: (context: Context) => Promise<any> }> = new Set();
-  renderables: Set<{ parent: Node, index?: number, executor: (context: Context) => Promise<any> }> = new Set();
+  attributes: Set<{ element: HTMLElement, attribute: string, executor: (context: Context) => Promise<any>, abort?: Abort }> = new Set();
+  renderables: Set<{ parent: Node, index?: number, executor: (context: Context) => Promise<any>, abort?: Abort }> = new Set();
+
+}
+
+export class State<T> {
+  state: PromiseState<T>;
+  constructor(state: PromiseState<T>) {
+    this.state = state;
+  }
+  promise(ctx: Context) {
+    if (!ctx.promises.has(this.state.id)) {
+      ctx.promises.add(this.state.id);
+      if (this.state.initialized) {
+        this.state.promise = this.state.cached();
+      }
+    }
+    this.state.consumed = true;
+    return this.state.promise;
+  }
+  get() {
+    return this.state.data as T;
+  }
+  set(value: T) {
+    if (this.state.data === value) return;
+    if (this.state.status === PromiseStatus.Fulfilled) {
+      this.state.stored = this.state.createPromise();
+    }
+    this.state.consumed = false;
+    this.state.promise = this.state.stored;
+    this.state.resolve(value);
+  }
+}
+
+type SetupConfig = {
+  childrenSet?: Map<number, any>;
+  index?: number;
+  abort?: Abort;
 }
 export class Context {
   i = new InnerContext();
@@ -162,10 +198,20 @@ export class Context {
       });
     })
   }
+
   create<T>(executor: (ctx: Context, h: CreateElement) => Promise<T>): (ctx: Context) => Promise<T> {
     return (ctx: Context) => executor(ctx, ctx.h.bind(this.h));
 
   }
+
+  global<T>(initial: T): State<T> {
+    const state = new State<T>(this.createPromiseState((state) => {
+      return state.createResolver();
+    }))
+    state.set(initial);
+    return state;
+  }
+
   fetch<T>(resource: string): Promise<T> {
     const id = globalContext.resources[resource];
     if (id !== undefined) {
@@ -245,7 +291,7 @@ export class Context {
       this.state(resource, value);
     }
   }
-  prop(prop: string, defaultValue: string): Promise<string> {
+  prop(prop: string, defaultValue?: string): Promise<string> {
     const id = this.i.properties[prop];
     if (id !== undefined) {
       const state = globalContext.promises[id];
@@ -259,7 +305,7 @@ export class Context {
       const promise = state.createResolver();
       return promise;
     })
-    state.resolve(defaultValue);
+    state.resolve(defaultValue ?? "");
     this.i.properties[prop] = state.id;
     state.consumed = true;
     return state.promise;
@@ -308,13 +354,11 @@ export class Context {
     });
   }
 
-  addAttribute(element: HTMLElement, attribute: string, value: any) {
-    console.log(attribute, value);
-
+  addAttribute(element: HTMLElement, attribute: string, value: any, abort?: Abort) {
     if (attribute[0] === "o" && attribute[1] === "n") {
       this.addListener(element, attribute.slice(2).toLowerCase(), value)
     } else if (typeof value === "function") {
-      this.i.attributes.add({ element, attribute, executor: value })
+      this.i.attributes.add({ element, attribute, executor: value, abort })
     } else if (attribute in element) {
       element[attribute] = value;
     } else {
@@ -325,23 +369,21 @@ export class Context {
       }
     }
   }
-  addAttributes(element: HTMLElement, attributes: any) {
+  addAttributes(element: HTMLElement, attributes: any, abort?: Abort) {
     for (const attribute in attributes) {
-      this.addAttribute(element, attribute, attributes[attribute]);
+      this.addAttribute(element, attribute, attributes[attribute], abort);
     }
   }
-
-  setup(parent: Node, child?: any | any[], childrenSet?: Map<any, Node> | number) {
-    const index = childrenSet;
+  setup(parent: Node, child: any | any[] | undefined, { childrenSet, index, abort }: SetupConfig = {}) {
     if (child === undefined) {
       return;
     } else if (typeof child === "function") {
-      this.i.renderables.add({ parent, executor: child, index: typeof index === "number" ? index : undefined });
+      this.i.renderables.add({ parent, executor: child, index: typeof index === "number" ? index : undefined, abort });
     } else if (Array.isArray(child)) {
       const toAdd = new Map(child.map(c => [c.attributes?.key, c]));
       if (toAdd.size === 1 && toAdd.has(undefined)) {
         child.forEach((child, index) => {
-          this.setup(parent, child, index);
+          this.setup(parent, child, { index, abort });
         });
         for (let i = parent.childNodes.length - 1; i >= child.length; i--) {
           parent.childNodes[i].remove();
@@ -349,14 +391,16 @@ export class Context {
       } else {
         for (const todo of parent.childrenSet.keys()) {
           if (!toAdd.has(todo)) {
-            parent.childrenSet.get(todo)!.remove();
+            const child = parent.childrenSet.get(todo)!;
+            child.element.remove();
+            child.abort.resolve();
             parent.childrenSet.delete(todo);
           } else {
             toAdd.delete(todo);
           }
         }
         toAdd.forEach(child => {
-          this.setup(parent, child, parent.childrenSet);
+          this.setup(parent, child, { childrenSet: parent.childrenSet, abort });
         })
       }
     } else {
@@ -367,8 +411,16 @@ export class Context {
         element = document.createElement(child.tag);
       }
       if (parent.childrenSet?.size > 0 || childrenSet instanceof Map) {
+        abort = { aborted: false };
+        abort.promise = new Promise<void>((resolve) => abort.resolve = () => {
+          abort.aborted = true;
+          resolve();
+        });
+      }
+      this.addAttributes(element, child.attributes, abort);
+      if (parent.childrenSet?.size > 0 || childrenSet instanceof Map) {
         parent.appendChild(element);
-        child.attributes?.key !== undefined && childrenSet?.set(child.attributes.key, element);
+        child.attributes?.key !== undefined && childrenSet?.set(child.attributes.key, { abort, element });
       } else {
         if (typeof index === "number" && parent.childNodes[index] !== undefined) {
           parent.replaceChild(element, parent.childNodes[index]);
@@ -376,54 +428,76 @@ export class Context {
           parent.appendChild(element);
         }
       }
-      this.addAttributes(element, child.attributes);
       element.childrenSet = new Map();
-      this.setup(element, child.children);
+      this.setup(element, child.children, { abort });
     }
   }
   resolve: (value: any) => void = () => { };
   async loop(render: (ctx: Context, h: CreateElement) => ReturnType<CreateElement>, el: AsyncComponent) {
     let tree = render(this, this.h.bind(this));
     let parent = el.root;
-    this.setup(parent, tree)
-    for (const attribute of this.i.attributes) {
-      (async () => {
-        const ctx = new Context();
-        ctx.i = this.i;
-        ctx.resolve = ((attr) => this.addAttribute(attribute.element, attribute.attribute, attr))
-        const attr = await attribute.executor(ctx);
-        ctx.resolve(attr);
-        ctx.restore();
-        ctx.promises.forEach(id => this.promises.add(id));
-        while (true) {
-          await Promise.race(Array.from(ctx.promises.keys()).map(id => globalContext.promises[id].promise));
-          ctx.save();
+    this.setup(parent, tree);
+    this.innerLoop();
+  }
+
+  innerLoop() {
+    if (this.i.attributes.size > 0) {
+      const attributes = this.i.attributes;
+      this.i.attributes = new Set();
+      for (const attribute of attributes) {
+        (async () => {
+          const ctx = new Context();
+          ctx.i = this.i;
+          ctx.resolve = ((attr) => this.addAttribute(attribute.element, attribute.attribute, attr, attribute.abort))
           const attr = await attribute.executor(ctx);
-          ctx.promises.forEach(id => this.promises.add(id));
           ctx.resolve(attr);
           ctx.restore();
-        }
-      })();
+          ctx.promises.forEach(id => this.promises.add(id));
+          while (true) {
+            const promises = Array.from(ctx.promises.keys()).map(id => globalContext.promises[id].promise)
+            if (attribute.abort) {
+              promises.push(attribute.abort.promise);
+            }
+            await Promise.race(promises);
+            if (attribute.abort?.aborted) break
+            ctx.save();
+            const attr = await attribute.executor(ctx);
+            ctx.promises.forEach(id => this.promises.add(id));
+            ctx.resolve(attr);
+            ctx.restore();
+          }
+        })();
+      }
     }
-    for (const render of this.i.renderables) {
-      (async () => {
-        const ctx = new Context();
-        ctx.i = this.i;
-        ctx.resolve = (value) => this.setup(render.parent, value, render.index)
-        const el = await render.executor(ctx);
-        ctx.promises.forEach(id => this.promises.add(id));
-        ctx.resolve(el);
-        ctx.restore();
-        while (true) {
-          await Promise.race(Array.from(ctx.promises.keys()).map(id => globalContext.promises[id].promise));
-          ctx.save();
+    if (this.i.renderables.size > 0) {
+      const renderables = this.i.renderables;
+      this.i.renderables = new Set();
+      for (const render of renderables) {
+        (async () => {
+          const ctx = new Context();
+          ctx.i = this.i;
+          ctx.resolve = (value) => this.setup(render.parent, value, { index: render.index, abort: render.abort })
           const el = await render.executor(ctx);
           ctx.promises.forEach(id => this.promises.add(id));
           ctx.resolve(el);
           ctx.restore();
-        }
-      })()
-    };
+          while (true) {
+            const promises = Array.from(ctx.promises.keys()).map(id => globalContext.promises[id].promise);
+            if (render.abort !== undefined) {
+              promises.push(render.abort.promise);
+            }
+            await Promise.race(promises);
+            if (render.abort?.aborted) break;
+            ctx.save();
+            const el = await render.executor(ctx);
+            ctx.promises.forEach(id => this.promises.add(id));
+            ctx.resolve(el);
+            ctx.restore();
+            this.innerLoop();
+          }
+        })()
+      }
+    }
   }
   h: CreateElement = (tag, attributes, ...children) => {
     return { tag, attributes, children };
@@ -433,14 +507,19 @@ export class Context {
 export class AsyncComponent extends HTMLElement {
   name: string = "";
   context = new Context();
-  root!: ShadowRoot;
+  root!: ShadowRoot | AsyncComponent;
+  useShadow = true;
   static observedAttributes: string[] = [];
   constructor() {
     super();
   }
   connectedCallback() {
-    const shadowRoot = this.attachShadow({ mode: "open" });
-    this.root = shadowRoot;
+    if (this.useShadow) {
+      const shadowRoot = this.attachShadow({ mode: "open" });
+      this.root = shadowRoot;
+    } else {
+      this.root = this;
+    }
 
     Object.getPrototypeOf(this).constructor.observedAttributes.forEach((attr: string) => {
       const value = this.getAttribute(attr);
@@ -474,7 +553,7 @@ class Dropdown extends AsyncComponent {
   render(ctx: Context, h: CreateElement) {
     const itemsUrl = ctx.create((ctx: Context) => ctx.prop("items-url", "/items"));
     const items = ctx.create(async (ctx: Context) => {
-      ctx.resolve(h("option", {value: "Loading..."}, "Loading..."));
+      ctx.resolve(h("option", { value: "Loading..." }, "Loading..."));
       return ctx.fetch<string[]>(await itemsUrl(ctx));
     })
     const selected = ctx.create(async (ctx: Context) => {
@@ -499,6 +578,9 @@ class Dropdown extends AsyncComponent {
     );
   }
 }
+
+export const globalCtx = new Context();
+
 
 class DropdownChanger extends AsyncComponent {
   name = "changer-dropdown";

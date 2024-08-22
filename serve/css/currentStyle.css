@@ -1,0 +1,47 @@
+@import url("/css/main.css");
+@import url("/css/bootstrap/dist/css/bootstrap.min.css");
+/* body {
+    font-family: 'Arial', 'Sans';
+    padding: 0;
+    margin: 0;
+}
+
+table {
+    border: none;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.col-md-6 div.row {
+    display: flex;
+}
+
+div {
+    padding: 0;
+    margin: 0;
+}
+
+tr {
+    border-top: 1px solid #999;
+    padding: 0;
+    margin: 0;
+    width: 100vw;
+    background-color:#eee;
+}
+td a {
+    display:block;
+}
+tr.danger {
+    background-color:#faa;
+}
+td {
+    border: none;
+    padding: 0;
+    margin: 0;
+    width: 200px;
+    height: 20px;
+    border-collapse: collapse;
+}
+.glyphicon.glyphicon-remove::after {
+    content: "X";
+} */

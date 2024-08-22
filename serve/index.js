@@ -67,7 +67,6 @@ class AsyncWebSocket {
     });
     this.ws.addEventListener("message", (ev) => {
       const data = JSON.parse(ev.data);
-      console.log(data);
       const id = this.promises[data.path];
       if (id !== undefined) {
         const state = globalContext.promises[id];
@@ -127,6 +126,36 @@ class InnerContext {
   renderables = new Set;
 }
 
+class State {
+  state;
+  constructor(state) {
+    this.state = state;
+  }
+  promise(ctx) {
+    if (!ctx.promises.has(this.state.id)) {
+      ctx.promises.add(this.state.id);
+      if (this.state.initialized) {
+        this.state.promise = this.state.cached();
+      }
+    }
+    this.state.consumed = true;
+    return this.state.promise;
+  }
+  get() {
+    return this.state.data;
+  }
+  set(value) {
+    if (this.state.data === value)
+      return;
+    if (this.state.status === 0 /* Fulfilled */) {
+      this.state.stored = this.state.createPromise();
+    }
+    this.state.consumed = false;
+    this.state.promise = this.state.stored;
+    this.state.resolve(value);
+  }
+}
+
 class Context {
   i = new InnerContext;
   promises = new Set;
@@ -147,6 +176,13 @@ class Context {
   }
   create(executor) {
     return (ctx) => executor(ctx, ctx.h.bind(this.h));
+  }
+  global(initial) {
+    const state = new State(this.createPromiseState((state2) => {
+      return state2.createResolver();
+    }));
+    state.set(initial);
+    return state;
   }
   fetch(resource) {
     const id = globalContext.resources[resource];
@@ -243,7 +279,7 @@ class Context {
       const promise = state2.createResolver();
       return promise;
     });
-    state.resolve(defaultValue);
+    state.resolve(defaultValue ?? "");
     this.i.properties[prop] = state.id;
     state.consumed = true;
     return state.promise;
@@ -293,12 +329,11 @@ class Context {
       state.store = true;
     });
   }
-  addAttribute(element, attribute, value) {
-    console.log(attribute, value);
+  addAttribute(element, attribute, value, abort) {
     if (attribute[0] === "o" && attribute[1] === "n") {
       this.addListener(element, attribute.slice(2).toLowerCase(), value);
     } else if (typeof value === "function") {
-      this.i.attributes.add({ element, attribute, executor: value });
+      this.i.attributes.add({ element, attribute, executor: value, abort });
     } else if (attribute in element) {
       element[attribute] = value;
     } else {
@@ -309,22 +344,21 @@ class Context {
       }
     }
   }
-  addAttributes(element, attributes) {
+  addAttributes(element, attributes, abort) {
     for (const attribute in attributes) {
-      this.addAttribute(element, attribute, attributes[attribute]);
+      this.addAttribute(element, attribute, attributes[attribute], abort);
     }
   }
-  setup(parent, child, childrenSet) {
-    const index = childrenSet;
+  setup(parent, child, { childrenSet, index, abort } = {}) {
     if (child === undefined) {
       return;
     } else if (typeof child === "function") {
-      this.i.renderables.add({ parent, executor: child, index: typeof index === "number" ? index : undefined });
+      this.i.renderables.add({ parent, executor: child, index: typeof index === "number" ? index : undefined, abort });
     } else if (Array.isArray(child)) {
       const toAdd = new Map(child.map((c) => [c.attributes?.key, c]));
       if (toAdd.size === 1 && toAdd.has(undefined)) {
         child.forEach((child2, index2) => {
-          this.setup(parent, child2, index2);
+          this.setup(parent, child2, { index: index2, abort });
         });
         for (let i = parent.childNodes.length - 1;i >= child.length; i--) {
           parent.childNodes[i].remove();
@@ -332,14 +366,16 @@ class Context {
       } else {
         for (const todo of parent.childrenSet.keys()) {
           if (!toAdd.has(todo)) {
-            parent.childrenSet.get(todo).remove();
+            const child2 = parent.childrenSet.get(todo);
+            child2.element.remove();
+            child2.abort.resolve();
             parent.childrenSet.delete(todo);
           } else {
             toAdd.delete(todo);
           }
         }
         toAdd.forEach((child2) => {
-          this.setup(parent, child2, parent.childrenSet);
+          this.setup(parent, child2, { childrenSet: parent.childrenSet, abort });
         });
       }
     } else {
@@ -350,8 +386,16 @@ class Context {
         element = document.createElement(child.tag);
       }
       if (parent.childrenSet?.size > 0 || childrenSet instanceof Map) {
+        abort = { aborted: false };
+        abort.promise = new Promise((resolve) => abort.resolve = () => {
+          abort.aborted = true;
+          resolve();
+        });
+      }
+      this.addAttributes(element, child.attributes, abort);
+      if (parent.childrenSet?.size > 0 || childrenSet instanceof Map) {
         parent.appendChild(element);
-        child.attributes?.key !== undefined && childrenSet?.set(child.attributes.key, element);
+        child.attributes?.key !== undefined && childrenSet?.set(child.attributes.key, { abort, element });
       } else {
         if (typeof index === "number" && parent.childNodes[index] !== undefined) {
           parent.replaceChild(element, parent.childNodes[index]);
@@ -359,9 +403,8 @@ class Context {
           parent.appendChild(element);
         }
       }
-      this.addAttributes(element, child.attributes);
       element.childrenSet = new Map;
-      this.setup(element, child.children);
+      this.setup(element, child.children, { abort });
     }
   }
   resolve = () => {
@@ -370,43 +413,67 @@ class Context {
     let tree = render(this, this.h.bind(this));
     let parent = el.root;
     this.setup(parent, tree);
-    for (const attribute of this.i.attributes) {
-      (async () => {
-        const ctx = new Context;
-        ctx.i = this.i;
-        ctx.resolve = (attr2) => this.addAttribute(attribute.element, attribute.attribute, attr2);
-        const attr = await attribute.executor(ctx);
-        ctx.resolve(attr);
-        ctx.restore();
-        ctx.promises.forEach((id) => this.promises.add(id));
-        while (true) {
-          await Promise.race(Array.from(ctx.promises.keys()).map((id) => globalContext.promises[id].promise));
-          ctx.save();
-          const attr2 = await attribute.executor(ctx);
-          ctx.promises.forEach((id) => this.promises.add(id));
-          ctx.resolve(attr2);
+    this.innerLoop();
+  }
+  innerLoop() {
+    if (this.i.attributes.size > 0) {
+      const attributes = this.i.attributes;
+      this.i.attributes = new Set;
+      for (const attribute of attributes) {
+        (async () => {
+          const ctx = new Context;
+          ctx.i = this.i;
+          ctx.resolve = (attr2) => this.addAttribute(attribute.element, attribute.attribute, attr2, attribute.abort);
+          const attr = await attribute.executor(ctx);
+          ctx.resolve(attr);
           ctx.restore();
-        }
-      })();
+          ctx.promises.forEach((id) => this.promises.add(id));
+          while (true) {
+            const promises = Array.from(ctx.promises.keys()).map((id) => globalContext.promises[id].promise);
+            if (attribute.abort) {
+              promises.push(attribute.abort.promise);
+            }
+            await Promise.race(promises);
+            if (attribute.abort?.aborted)
+              break;
+            ctx.save();
+            const attr2 = await attribute.executor(ctx);
+            ctx.promises.forEach((id) => this.promises.add(id));
+            ctx.resolve(attr2);
+            ctx.restore();
+          }
+        })();
+      }
     }
-    for (const render2 of this.i.renderables) {
-      (async () => {
-        const ctx = new Context;
-        ctx.i = this.i;
-        ctx.resolve = (value) => this.setup(render2.parent, value, render2.index);
-        const el2 = await render2.executor(ctx);
-        ctx.promises.forEach((id) => this.promises.add(id));
-        ctx.resolve(el2);
-        ctx.restore();
-        while (true) {
-          await Promise.race(Array.from(ctx.promises.keys()).map((id) => globalContext.promises[id].promise));
-          ctx.save();
-          const el3 = await render2.executor(ctx);
+    if (this.i.renderables.size > 0) {
+      const renderables = this.i.renderables;
+      this.i.renderables = new Set;
+      for (const render of renderables) {
+        (async () => {
+          const ctx = new Context;
+          ctx.i = this.i;
+          ctx.resolve = (value) => this.setup(render.parent, value, { index: render.index, abort: render.abort });
+          const el = await render.executor(ctx);
           ctx.promises.forEach((id) => this.promises.add(id));
-          ctx.resolve(el3);
+          ctx.resolve(el);
           ctx.restore();
-        }
-      })();
+          while (true) {
+            const promises = Array.from(ctx.promises.keys()).map((id) => globalContext.promises[id].promise);
+            if (render.abort !== undefined) {
+              promises.push(render.abort.promise);
+            }
+            await Promise.race(promises);
+            if (render.abort?.aborted)
+              break;
+            ctx.save();
+            const el2 = await render.executor(ctx);
+            ctx.promises.forEach((id) => this.promises.add(id));
+            ctx.resolve(el2);
+            ctx.restore();
+            this.innerLoop();
+          }
+        })();
+      }
     }
   }
   h = (tag, attributes, ...children) => {
@@ -418,13 +485,18 @@ class AsyncComponent extends HTMLElement {
   name = "";
   context = new Context;
   root;
+  useShadow = true;
   static observedAttributes = [];
   constructor() {
     super();
   }
   connectedCallback() {
-    const shadowRoot = this.attachShadow({ mode: "open" });
-    this.root = shadowRoot;
+    if (this.useShadow) {
+      const shadowRoot = this.attachShadow({ mode: "open" });
+      this.root = shadowRoot;
+    } else {
+      this.root = this;
+    }
     Object.getPrototypeOf(this).constructor.observedAttributes.forEach((attr) => {
       const value = this.getAttribute(attr);
       if (value) {
@@ -474,6 +546,7 @@ class Dropdown extends AsyncComponent {
     }));
   }
 }
+var globalCtx = new Context;
 
 class DropdownChanger extends AsyncComponent {
   name = "changer-dropdown";
@@ -513,6 +586,8 @@ customElements.define("await-dropdown", Dropdown);
 customElements.define("changer-dropdown", DropdownChanger);
 customElements.define("test-element", TestElement);
 export {
+  globalCtx,
+  State,
   Context,
   AsyncComponent
 };
