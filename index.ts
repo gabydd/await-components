@@ -201,10 +201,9 @@ export class Context {
 
   create<T>(executor: (ctx: Context, h: CreateElement) => Promise<T>): (ctx: Context) => Promise<T> {
     return (ctx: Context) => executor(ctx, ctx.h.bind(this.h));
-
   }
 
-  global<T>(initial: T): State<T> {
+  state<T>(initial: T): State<T> {
     const state = new State<T>(this.createPromiseState((state) => {
       return state.createResolver();
     }))
@@ -254,11 +253,11 @@ export class Context {
     await ws.openPromise;
     return new WebSocketContext(ws, this);
   }
-  state<T>(resource: string, initial: T): Promise<T> {
+  keyedState<T>(resource: string, initial: T): Promise<T> {
     const id = this.i.states[resource];
     if (id !== undefined) {
       if (this.i.initialVals[resource] !== initial) {
-        this.set(resource, initial);
+        this.setKeyed(resource, initial);
         this.i.initialVals[resource] = initial;
       }
       const state = globalContext.promises[id];
@@ -277,7 +276,7 @@ export class Context {
     state.consumed = true;
     return state.promise;
   }
-  set<T>(resource: string, value: T) {
+  setKeyed<T>(resource: string, value: T) {
     if (this.i.states[resource]) {
       const state = globalContext.promises[this.i.states[resource]];
       if (state.data === value) return;
@@ -288,7 +287,7 @@ export class Context {
       state.promise = state.stored;
       state.resolve(value);
     } else {
-      this.state(resource, value);
+      this.keyedState(resource, value);
     }
   }
   prop(prop: string, defaultValue?: string): Promise<string> {
@@ -559,20 +558,20 @@ class Dropdown extends AsyncComponent {
     const selected = ctx.create(async (ctx: Context) => {
       const itemsPromise = items(ctx);
       ctx.resolve("Loading...");
-      return ctx.state(await itemsUrl(ctx) + "/selected", (await itemsPromise)[0])
+      return ctx.keyedState(await itemsUrl(ctx) + "/selected", (await itemsPromise)[0])
     })
     return h("div", {},
       h("select", {
         onChange: async (ctx: Context, ev: any) => {
-          ctx.set(await itemsUrl(ctx) + "/selected", ev.target.value);
+          ctx.setKeyed(await itemsUrl(ctx) + "/selected", ev.target.value);
         },
         value: selected,
       }, async (ctx: Context) =>
         (await items(ctx)).map(item => h("option", { value: item }, item))),
       h("div", {}, selected),
       h("div", {}, async (ctx: Context) => {
-        let test = await ctx.state("/testing", 1);
-        ctx.set("/testing", 3);
+        let test = await ctx.keyedState("/testing", 1);
+        ctx.setKeyed("/testing", 3);
         return test;
       }),
     );
@@ -590,20 +589,20 @@ class DropdownChanger extends AsyncComponent {
       return ctx.fetch<string[]>("/itemUrls")
     })
     const selected = ctx.create(async (ctx: Context) => {
-      return ctx.state("/selected", (await items(ctx))[0])
+      return ctx.keyedState("/selected", (await items(ctx))[0])
     })
     return h("div", {},
       h("p", {}, "Use this to chagne the url the await dropdown gets it's values from"),
       h("select", {
         onChange: (ctx: Context, ev: any) => {
-          ctx.set("/selected", ev.target.value);
+          ctx.setKeyed("/selected", ev.target.value);
         },
         value: selected,
       }, async (ctx: Context) =>
         (await items(ctx)).map(item => h("option", { value: item }, item))),
       h("div", {}, async () => {
-        let test = await ctx.state("/testing", 1);
-        ctx.set("/testing", 3);
+        let test = await ctx.keyedState("/testing", 1);
+        ctx.setKeyed("/testing", 3);
         return test;
       }),
       h("div", {},
@@ -616,8 +615,8 @@ class TestElement extends AsyncComponent {
   static observedAttributes = [];
   render(ctx: Context, h: CreateElement) {
     return h("div", {}, async (ctx: Context) => {
-      let test = await ctx.state("/testing", 1);
-      ctx.set("/testing", 3);
+      let test = await ctx.keyedState("/testing", 1);
+      ctx.setKeyed("/testing", 3);
       return test;
     });
   }

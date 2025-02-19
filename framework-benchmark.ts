@@ -24,15 +24,15 @@ function buildData(ctx: Context, count: number) {
 
   const data = new Array<RowData>(count);
   for (let i = 0; i < count; i++) {
-    data[i] = { text: ctx.global(`${adjectives[random(adjectives.length)]} ${colors[random(colors.length)]} ${nouns[random(nouns.length)]}`), id: ctx.global(nextId++) };
+    data[i] = { text: ctx.state(`${adjectives[random(adjectives.length)]} ${colors[random(colors.length)]} ${nouns[random(nouns.length)]}`), id: ctx.state(nextId++) };
   }
   return data;
 }
 
 
 
-const rows = globalCtx.global<RowData[]>([]);
-const selected = globalCtx.global(0);
+const rows = globalCtx.state<RowData[]>([]);
+const selected = globalCtx.state(0);
 class Layout extends AsyncComponent {
   useShadow = false;
   row(ctx: Context, h: CreateElement, row: RowData) {

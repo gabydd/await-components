@@ -5,7 +5,12 @@ class Layout extends AsyncComponent {
   name = "todos-layout";
   render(ctx: Context, h: CreateElement) {
     return h("div", {},
-      h("div", {}, h("input", { type: "text", id: "text" }), h("button", {
+      h("div", {}, h("input", { type: "text", id: "text", onKeyup: async (ctx: Context, ev: any) => {
+        if (ev.key === "Enter") {
+          const ws = await ctx.ws("/wss");
+          ws.send({ type: MessageType.CreateTodo, text: ev.target.value } satisfies ClientMessage)
+        }
+      } }), h("button", {
         onClick: async (ctx: Context, ev: any) => {
           const ws = await ctx.ws("/wss");
           ws.send({ type: MessageType.CreateTodo, text: ev.target.parentElement.firstElementChild.value } satisfies ClientMessage)
